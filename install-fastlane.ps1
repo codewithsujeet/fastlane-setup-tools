@@ -20,7 +20,7 @@ $Branch = "master"
 $FilesToInstall = @(
     "setup-fastlane.ps1",
     "setup-fastlane.cmd",
-    "FASTLANE_SETUP_GUIDE.md"
+    "FASTLANE_SETUP_GUIDE"
 )
 
 $TempDirectory = $null
