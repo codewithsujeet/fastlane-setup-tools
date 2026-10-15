@@ -244,6 +244,185 @@ end
         Write-Host "Created: $($File.Path)" -ForegroundColor Green
     }
 
+
+    Write-Step "Detecting iOS Fastlane configuration"
+
+    $IosPath = Join-Path $ProjectPath "ios"
+    if (Test-Path -LiteralPath $IosPath) {
+        $XcodeProject = Get-ChildItem -LiteralPath $IosPath -Directory -Filter "*.xcodeproj" |
+            Select-Object -First 1
+        $PbxprojPath = $null
+        if ($XcodeProject) {
+            $PbxprojPath = Join-Path $XcodeProject.FullName "project.pbxproj"
+        }
+
+        $IosBundleId = $null
+        $IosTeamId = $null
+        if ($PbxprojPath -and (Test-Path -LiteralPath $PbxprojPath)) {
+            $PbxprojContent = Get-Content -LiteralPath $PbxprojPath -Raw
+
+            $BundleMatches = [regex]::Matches(
+                $PbxprojContent,
+                'PRODUCT_BUNDLE_IDENTIFIER\s*=\s*([^;]+);'
+            )
+            foreach ($BundleMatch in $BundleMatches) {
+                $Candidate = $BundleMatch.Groups[1].Value.Trim().Trim('"')
+                if ($Candidate -and $Candidate -notmatch '\$\(' -and $Candidate -notmatch '\*') {
+                    $IosBundleId = $Candidate
+                    break
+                }
+            }
+
+            $TeamMatch = [regex]::Match(
+                $PbxprojContent,
+                'DEVELOPMENT_TEAM\s*=\s*([A-Z0-9]+);'
+            )
+            if ($TeamMatch.Success) {
+                $IosTeamId = $TeamMatch.Groups[1].Value.Trim()
+            }
+        }
+
+        # Prefer an explicitly shared Xcode scheme; fall back to the project name.
+        $Scheme = $null
+        $SharedSchemesPath = Join-Path $IosPath "fastlane"
+        $SchemeFiles = Get-ChildItem -LiteralPath $IosPath -Recurse -File -Filter "*.xcscheme" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\.xcodeproj\\xcshareddata\\xcschemes\\|\.xcworkspace\\xcshareddata\\xcschemes\\' }
+        if ($SchemeFiles) {
+            $Scheme = [System.IO.Path]::GetFileNameWithoutExtension($SchemeFiles[0].Name)
+        }
+        if (-not $Scheme -and $XcodeProject) {
+            $Scheme = [System.IO.Path]::GetFileNameWithoutExtension($XcodeProject.Name)
+        }
+
+        if (-not $IosBundleId) {
+            $IosBundleId = Read-Host "Could not detect iOS bundle ID. Enter app_identifier (e.g. com.example.app)"
+        } else {
+            Write-Host "Detected iOS bundle ID: $IosBundleId" -ForegroundColor Green
+        }
+
+        if (-not $IosTeamId) {
+            $IosTeamId = Read-Host "Could not detect Apple Developer Team ID. Enter team_id"
+        } else {
+            Write-Host "Detected Apple Developer Team ID: $IosTeamId" -ForegroundColor Green
+        }
+
+        if (-not $Scheme) {
+            $Scheme = Read-Host "Could not detect Xcode scheme. Enter scheme name"
+        } else {
+            Write-Host "Detected Xcode scheme: $Scheme" -ForegroundColor Green
+        }
+
+        # Apple ID email is not stored reliably in an Xcode project, so use an environment
+        # variable when set, otherwise ask the developer. It is not guessed from the project.
+        $AppleId = $env:FASTLANE_APPLE_ID
+        if ([string]::IsNullOrWhiteSpace($AppleId)) {
+            $AppleId = Read-Host "Enter Apple ID email (used by Fastlane Appfile)"
+        }
+
+        if ([string]::IsNullOrWhiteSpace($IosBundleId) -or
+            [string]::IsNullOrWhiteSpace($IosTeamId) -or
+            [string]::IsNullOrWhiteSpace($Scheme) -or
+            [string]::IsNullOrWhiteSpace($AppleId)) {
+            throw "iOS Fastlane values cannot be empty."
+        }
+
+        $IosFastlanePath = Join-Path $IosPath "fastlane"
+        New-Item -ItemType Directory -Path $IosFastlanePath -Force | Out-Null
+
+        $IosAppfileContent = @'
+app_identifier("__IOS_BUNDLE_ID__")
+apple_id("__APPLE_ID__")
+team_id("__IOS_TEAM_ID__")
+'@
+        $IosAppfileContent = $IosAppfileContent.Replace("__IOS_BUNDLE_ID__", $IosBundleId).
+            Replace("__APPLE_ID__", $AppleId).
+            Replace("__IOS_TEAM_ID__", $IosTeamId)
+
+        $IosFastfileContent = @'
+default_platform(:ios)
+
+platform :ios do
+  desc "Build and upload to TestFlight"
+  lane :testflight do
+    api_key = app_store_connect_api_key(
+      key_id: ENV.fetch("ASC_KEY_ID"),
+      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      key_filepath: ENV.fetch(
+        "ASC_KEY_PATH",
+        File.expand_path("./AuthKey_#{ENV.fetch('ASC_KEY_ID')}.p8", __dir__)
+      ),
+      duration: 1200,
+      in_house: false
+    )
+
+    build_app(
+      scheme: "__IOS_SCHEME__",
+      export_method: "app-store"
+    )
+
+    upload_to_testflight(
+      api_key: api_key,
+      skip_waiting_for_build_processing: true
+    )
+  end
+end
+'@
+        $IosFastfileContent = $IosFastfileContent.Replace("__IOS_SCHEME__", $Scheme)
+
+        $IosGemfileContent = @'
+source "https://rubygems.org"
+
+gem "fastlane"
+'@
+
+        $IosFiles = @(
+            @{
+                Path = Join-Path $IosFastlanePath "Appfile"
+                Content = $IosAppfileContent
+            },
+            @{
+                Path = Join-Path $IosFastlanePath "Fastfile"
+                Content = $IosFastfileContent
+            },
+            @{
+                Path = Join-Path $IosPath "Gemfile"
+                Content = $IosGemfileContent
+            }
+        )
+
+        Write-Step "Generating iOS Fastlane files"
+        foreach ($File in $IosFiles) {
+            if ((Test-Path -LiteralPath $File.Path) -and -not $Force) {
+                $Answer = Read-Host "File exists: $($File.Path). Overwrite? (y/N)"
+                if ($Answer -notin @("y", "Y", "yes", "YES")) {
+                    Write-Host "Preserving existing file: $($File.Path)" -ForegroundColor Yellow
+                    continue
+                }
+            }
+
+            if (Test-Path -LiteralPath $File.Path) {
+                $BackupPath = "$($File.Path).backup"
+                if (-not (Test-Path -LiteralPath $BackupPath)) {
+                    Copy-Item -LiteralPath $File.Path -Destination $BackupPath
+                    Write-Host "Backup created: $BackupPath" -ForegroundColor Yellow
+                }
+            }
+
+            Set-Content -LiteralPath $File.Path -Value $File.Content -Encoding UTF8
+            Write-Host "Created: $($File.Path)" -ForegroundColor Green
+        }
+
+        Write-Host "iOS bundle ID: $IosBundleId"
+        Write-Host "Apple ID: $AppleId"
+        Write-Host "Team ID: $IosTeamId"
+        Write-Host "Scheme: $Scheme"
+        Write-Host "Note: iOS builds/TestFlight uploads must run on macOS with Xcode." -ForegroundColor Yellow
+        Write-Host "Set ASC_KEY_ID, ASC_ISSUER_ID, and ASC_KEY_PATH before running the TestFlight lane." -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "No ios folder found; skipping iOS Fastlane setup." -ForegroundColor Yellow
+    }
+
     Write-Step "Checking Ruby and Bundler"
 
     if (-not (Get-Command ruby -ErrorAction SilentlyContinue)) {
