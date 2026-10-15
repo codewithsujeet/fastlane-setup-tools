@@ -15,14 +15,14 @@ gem install fastlane -NV
 ## One-time setup by the project maintainer
 
 1. Copy `setup-fastlane.ps1`, `setup-fastlane.cmd`, and this guide into the React Native project root, alongside `package.json`.
-2. Run `setup-fastlane.cmd` from CMD, or run `powershell -NoProfile -ExecutionPolicy Bypass -File` from PowerShell.
+2. Run `setup-fastlane.cmd` from CMD, or run `powershell -NoProfile -ExecutionPolicy Bypass -File "setup-fastlane.ps1"` from PowerShell.
 3. Review `android/fastlane/Appfile` and confirm `package_name` matches the app's Google Play application ID.
 4. Commit the setup scripts and generated `android/Gemfile`, `android/fastlane/Appfile`, and `android/fastlane/Fastfile` to the project repository.
 
 If generated Fastlane files already exist and should intentionally be replaced, run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File
+powershell -NoProfile -ExecutionPolicy Bypass -File "setup-fastlane.ps1"
 ```
 
 
@@ -37,7 +37,7 @@ Each developer needs Ruby with DevKit, Bundler, a compatible JDK, Android SDK/bu
 From the project root, run the setup script if the Fastlane files have not been generated:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File
+powershell -NoProfile -ExecutionPolicy Bypass -File "setup-fastlane.ps1"
 ```
 
 The setup script adds or updates these npm scripts while preserving other scripts:
