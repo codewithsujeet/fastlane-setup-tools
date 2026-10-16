@@ -82,8 +82,7 @@ try {
         "fastlane:apk"      = "cd android && bundle exec fastlane apk"
         "fastlane:deploy"   = "cd android && bundle exec fastlane deploy"
         "fastlane:internal" = "cd android && bundle exec fastlane internal"
-        "ios:fastlane:build" = "cd ios && bundle exec fastlane ios build"
-        "ios:fastlane:testflight" = "cd ios && bundle exec fastlane ios testflight"
+        "fastlane:ios:testflight" = "cd ios && bundle exec fastlane testflight"
     }
 
     foreach ($Entry in $NewScripts.GetEnumerator()) {
@@ -400,7 +399,7 @@ platform :ios do
 
   desc "Build and upload to TestFlight"
   lane :testflight do
-  
+
     api_key = app_store_connect_api_key(
       key_id: "KHK7587878",
       issuer_id: "frte03b-6fb2-4089-be60-8071d381abf5",
@@ -587,7 +586,7 @@ Do not commit the real private key to source control.
     Write-Host "  npm run fastlane:internal"
     Write-Host "  npm run fastlane:deploy"
     if ($HasIOS) {
-        Write-Host "  npm run ios:fastlane:testflight"
+        Write-Host "  npm run fastlane:ios:testflight"
     }
     Write-Host ""
     Write-Host "Note: fastlane:deploy defaults to production unless a track is supplied." -ForegroundColor Yellow
