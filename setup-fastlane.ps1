@@ -137,7 +137,7 @@ gem "fastlane"
 '@
 
     $AppfileContent = @'
-json_key_file("./fastlane/e-oms.json")
+json_key_file("./fastlane/project-name.json")
 package_name("__ANDROID_APPLICATION_ID__")
 '@
 
@@ -146,8 +146,8 @@ package_name("__ANDROID_APPLICATION_ID__")
         $ApplicationId
     )
 
-    # Generate a project-specific Android Fastlane JSON config alongside Appfile/Fastfile.
-    # This is configuration metadata, not the Google Play service-account private key.
+    # Create the expected Android service-account JSON path as a template.
+    # Replace this template with the real JSON downloaded from Google Play Console before deployment.
     $AndroidProjectName = $null
     try {
         $AndroidPackageJsonObject = Get-Content -LiteralPath $PackageJsonPath -Raw | ConvertFrom-Json
@@ -161,17 +161,21 @@ package_name("__ANDROID_APPLICATION_ID__")
     if ([string]::IsNullOrWhiteSpace($SafeAndroidProjectName)) {
         $SafeAndroidProjectName = "react-native-app"
     }
-    $AndroidProjectJsonPath = Join-Path $FastlanePath ($SafeAndroidProjectName + ".json")
+    # Fastlane's json_key_file must point to a real Google Play service-account JSON.
+    # The generated template is intentionally non-functional until replaced with the real downloaded key.
+    $AndroidProjectJsonPath = Join-Path $FastlanePath "project-name.json"
     $AndroidProjectJsonObject = [ordered]@{
-        project_name = $AndroidProjectName
-        platform = "android"
-        application_id = $ApplicationId
-        google_play = [ordered]@{
-            service_account_json = "e-oms.json"
-            default_track = "production"
-            internal_track = "internal"
-            note = "Place your real Google Play service-account JSON at android/fastlane/e-oms.json. Do not commit credentials."
-        }
+        type = "service_account"
+        project_id = "REPLACE_WITH_GOOGLE_CLOUD_PROJECT_ID"
+        private_key_id = "REPLACE_WITH_PRIVATE_KEY_ID"
+        private_key = "REPLACE_WITH_PRIVATE_KEY_FROM_GOOGLE_SERVICE_ACCOUNT_JSON"
+        client_email = "REPLACE_WITH_SERVICE_ACCOUNT_EMAIL"
+        client_id = "REPLACE_WITH_SERVICE_ACCOUNT_CLIENT_ID"
+        auth_uri = "https://accounts.google.com/o/oauth2/auth"
+        token_uri = "https://oauth2.googleapis.com/token"
+        auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+        client_x509_cert_url = "REPLACE_WITH_CLIENT_CERTIFICATE_URL"
+        universe_domain = "googleapis.com"
     }
     $AndroidProjectJsonContent = $AndroidProjectJsonObject | ConvertTo-Json -Depth 5
 
@@ -396,7 +400,7 @@ platform :ios do
     issuer_id = ENV.fetch("ASC_ISSUER_ID", "fab9e03b-6fb2-4089-be60-8071d381abf5")
     key_path = ENV.fetch(
       "ASC_KEY_PATH",
-      File.expand_path("./AuthKey_#{key_id}.p8", __dir__)
+      File.expand_path("./AuthKey_Y7HK39NU9J.p8", __dir__)
     )
 
     UI.user_error!("App Store Connect API key not found: #{key_path}") unless File.file?(key_path)
@@ -429,34 +433,33 @@ source "https://rubygems.org"
 gem "fastlane"
 '@
 
-        # Generate a project-specific JSON configuration template inside ios/fastlane.
-        # This is metadata/configuration only; it is NOT an App Store Connect private key.
-        $ProjectName = $null
+        # Remove the previously generated iOS project JSON metadata file only when it is
+        # clearly the old generated template. Do not delete unrelated/user-owned JSON files.
+        $OldProjectName = $null
         try {
             $PackageJsonObject = Get-Content -LiteralPath $PackageJsonPath -Raw | ConvertFrom-Json
-            $ProjectName = [string]$PackageJsonObject.name
+            $OldProjectName = [string]$PackageJsonObject.name
         }
-        catch { $ProjectName = $null }
-        if ([string]::IsNullOrWhiteSpace($ProjectName)) {
-            $ProjectName = Split-Path -Leaf $ProjectPath
+        catch { $OldProjectName = $null }
+        if ([string]::IsNullOrWhiteSpace($OldProjectName)) {
+            $OldProjectName = Split-Path -Leaf $ProjectPath
         }
-        $SafeProjectName = ($ProjectName -replace '[^A-Za-z0-9._-]', '-')
-        if ([string]::IsNullOrWhiteSpace($SafeProjectName)) { $SafeProjectName = "react-native-app" }
-        $ProjectJsonPath = Join-Path $IosFastlanePath ($SafeProjectName + ".json")
-        $ProjectJsonObject = [ordered]@{
-            project_name = $ProjectName
-            app_identifier = $IosBundleId
-            apple_id = $AppleId
-            team_id = $IosTeamId
-            scheme = $Scheme
-            app_store_connect = [ordered]@{
-                key_id = "SET_ASC_KEY_ID"
-                issuer_id = "SET_ASC_ISSUER_ID"
-                key_file = "AuthKey_SET_ASC_KEY_ID.p8"
-                note = "Place the real App Store Connect .p8 key in this folder. Do not commit it to Git."
+        $OldSafeProjectName = ($OldProjectName -replace '[^A-Za-z0-9._-]', '-')
+        if (-not [string]::IsNullOrWhiteSpace($OldSafeProjectName)) {
+            $OldIosJsonPath = Join-Path $IosFastlanePath ($OldSafeProjectName + ".json")
+            if (Test-Path -LiteralPath $OldIosJsonPath -PathType Leaf) {
+                try {
+                    $OldJson = Get-Content -LiteralPath $OldIosJsonPath -Raw | ConvertFrom-Json
+                    if ($OldJson.app_store_connect -and $OldJson.project_name) {
+                        Remove-Item -LiteralPath $OldIosJsonPath -Force
+                        Write-Host "Removed old generated iOS metadata JSON: $OldIosJsonPath" -ForegroundColor Yellow
+                    }
+                }
+                catch {
+                    Write-Host "Kept existing iOS JSON because its contents could not be verified: $OldIosJsonPath" -ForegroundColor Yellow
+                }
             }
         }
-        $ProjectJsonContent = $ProjectJsonObject | ConvertTo-Json -Depth 5
 
         # A valid .p8 cannot be generated locally: it must be downloaded from App Store Connect.
         # Create a clearly labelled helper file rather than a fake key that would break uploads.
@@ -465,8 +468,8 @@ gem "fastlane"
 App Store Connect API key setup
 
 1. In App Store Connect, create/download an API key with the required App Store Connect access.
-2. Copy the downloaded AuthKey_<KEY_ID>.p8 file into this ios/fastlane folder.
-3. Set ASC_KEY_ID and ASC_ISSUER_ID, or update the project JSON configuration file.
+2. Copy the downloaded AuthKey_Y7HK39NU9J.p8 file into this ios/fastlane folder (or update the Fastfile path to match your actual key filename).
+3. Set ASC_KEY_ID and ASC_ISSUER_ID to the values shown in App Store Connect.
 4. Optionally set ASC_KEY_PATH to the full path of the .p8 file.
 
 A valid private key cannot be generated by this setup script. Do not rename a placeholder to .p8,
@@ -485,10 +488,6 @@ never share the key, and never commit the real .p8 file to Git.
             @{
                 Path = Join-Path $IosPath "Gemfile"
                 Content = $IosGemfileContent
-            },
-            @{
-                Path = $ProjectJsonPath
-                Content = $ProjectJsonContent
             },
             @{
                 Path = $P8InstructionsPath
@@ -522,11 +521,10 @@ never share the key, and never commit the real .p8 file to Git.
         Write-Host "Apple ID: $AppleId"
         Write-Host "Team ID: $IosTeamId"
         Write-Host "Scheme: $Scheme"
-        Write-Host "Project config JSON: $ProjectJsonPath" -ForegroundColor Green
         Write-Host "App Store Connect key instructions: $P8InstructionsPath" -ForegroundColor Green
-        Write-Host "A real AuthKey_<KEY_ID>.p8 must be downloaded from App Store Connect; no fake key was created." -ForegroundColor Yellow
+        Write-Host "Use the real AuthKey_Y7HK39NU9J.p8 downloaded from App Store Connect; no fake key was created." -ForegroundColor Yellow
         Write-Host "Note: iOS builds/TestFlight uploads must run on macOS with Xcode." -ForegroundColor Yellow
-        Write-Host "Set ASC_KEY_ID, ASC_ISSUER_ID, and ASC_KEY_PATH before running the TestFlight lane." -ForegroundColor Yellow
+        Write-Host "Set ASC_KEY_ID and ASC_ISSUER_ID before running the TestFlight lane; ASC_KEY_PATH is optional if using the default key path." -ForegroundColor Yellow
     }
     else {
         Write-Host "No ios folder found; skipping iOS Fastlane setup." -ForegroundColor Yellow
@@ -603,10 +601,9 @@ never share the key, and never commit the real .p8 file to Git.
     }
     Write-Host ""
     Write-Host "Note: fastlane:deploy defaults to production unless a track is supplied." -ForegroundColor Yellow
-    if ($HasAndroid) { Write-Host "Google Play credentials must be available at android/fastlane/e-oms.json." -ForegroundColor Yellow }
+    if ($HasAndroid) { Write-Host "Replace android/fastlane/project-name.json with the real Google Play service-account JSON before deploying." -ForegroundColor Yellow }
     if ($HasIOS) {
-        Write-Host "Place the real ios/fastlane/AuthKey_<KEY_ID>.p8 file in ios/fastlane (or set ASC_KEY_PATH)." -ForegroundColor Yellow
-        Write-Host "A project-specific JSON configuration file is generated in ios/fastlane; it is not a private-key file." -ForegroundColor Yellow
+        Write-Host "Place the real ios/fastlane/AuthKey_Y7HK39NU9J.p8 file in ios/fastlane (or set ASC_KEY_PATH)." -ForegroundColor Yellow
         Write-Host "Never commit the .p8 private key to Git." -ForegroundColor Yellow
         Write-Host "Run iOS build/TestFlight lanes on macOS with Xcode installed." -ForegroundColor Yellow
     }
