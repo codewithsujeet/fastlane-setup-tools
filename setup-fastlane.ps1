@@ -397,26 +397,11 @@ team_id("__IOS_TEAM_ID__")
 default_platform(:ios)
 
 platform :ios do
-  desc "Build an App Store signed IPA"
-  lane :build do
-    build_app(
-      scheme: "__IOS_SCHEME__",
-      export_method: "app-store"
-    )
-  end
-
   desc "Build and upload to TestFlight"
   lane :testflight do
-    key_id = ENV.fetch("ASC_KEY_ID")
-    issuer_id = ENV.fetch("ASC_ISSUER_ID")
-    key_path = ENV.fetch(
-      "ASC_KEY_PATH",
-      File.expand_path("__IOS_AUTHKEY_FILENAME__", __dir__)
-    )
-
-    UI.user_error!("App Store Connect API key file not found: #{key_path}") unless File.file?(key_path)
-    UI.user_error!("The key file is a setup placeholder. Replace it with the real .p8 private key downloaded from App Store Connect.") unless File.read(key_path).include?("-----BEGIN PRIVATE KEY-----")
-
+    key_id = "KHK7587878"
+    issuer_id = "frte03b-6fb2-4089-be60-8071d381abf5"
+    key_path = "./fastlane/__IOS_AUTHKEY_FILENAME__"
     api_key = app_store_connect_api_key(
       key_id: key_id,
       issuer_id: issuer_id,
@@ -603,7 +588,6 @@ Do not commit the real private key to source control.
     Write-Host "  npm run fastlane:internal"
     Write-Host "  npm run fastlane:deploy"
     if ($HasIOS) {
-        Write-Host "  npm run ios:fastlane:build"
         Write-Host "  npm run ios:fastlane:testflight"
     }
     Write-Host ""
