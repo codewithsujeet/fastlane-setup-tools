@@ -488,7 +488,7 @@ Do not commit the real private key to source control.
         foreach ($File in $IosFiles) {
             if ((Test-Path -LiteralPath $File.Path) -and -not $Force) {
                 $Answer = Read-Host "File exists: $($File.Path). Overwrite? (y/N)"
-                if ($Answer -notin @("y", "Y", "yes", "YES")) {
+                if ($Answer.Trim() -notin @("", "y", "Y", "yes", "YES")) {
                     Write-Host "Preserving existing file: $($File.Path)" -ForegroundColor Yellow
                     continue
                 }
