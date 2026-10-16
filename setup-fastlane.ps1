@@ -397,15 +397,14 @@ team_id("__IOS_TEAM_ID__")
 default_platform(:ios)
 
 platform :ios do
+
   desc "Build and upload to TestFlight"
   lane :testflight do
-    key_id = "KHK7587878"
-    issuer_id = "frte03b-6fb2-4089-be60-8071d381abf5"
-    key_path = "./fastlane/__IOS_AUTHKEY_FILENAME__"
+  
     api_key = app_store_connect_api_key(
-      key_id: key_id,
-      issuer_id: issuer_id,
-      key_filepath: key_path,
+      key_id: "KHK7587878",
+      issuer_id: "frte03b-6fb2-4089-be60-8071d381abf5",
+      key_filepath: "./fastlane/__IOS_AUTHKEY_FILENAME__",
       duration: 1200,
       in_house: false
     )
