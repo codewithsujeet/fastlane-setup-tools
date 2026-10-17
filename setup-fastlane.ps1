@@ -82,7 +82,7 @@ try {
         "fastlane:apk"      = "cd android && bundle exec fastlane apk"
         "fastlane:deploy"   = "cd android && bundle exec fastlane deploy"
         "fastlane:internal" = "cd android && bundle exec fastlane internal"
-        "fastlane:ios:testflight" = "cd ios && bundle exec fastlane testflight"
+        "fastlane:testflight" = "cd ios && bundle exec fastlane testflight"
     }
 
     foreach ($Entry in $NewScripts.GetEnumerator()) {
@@ -586,7 +586,7 @@ Do not commit the real private key to source control.
     Write-Host "  npm run fastlane:internal"
     Write-Host "  npm run fastlane:deploy"
     if ($HasIOS) {
-        Write-Host "  npm run fastlane:ios:testflight"
+        Write-Host "  npm run fastlane:testflight"
     }
     Write-Host ""
     Write-Host "Note: fastlane:deploy defaults to production unless a track is supplied." -ForegroundColor Yellow

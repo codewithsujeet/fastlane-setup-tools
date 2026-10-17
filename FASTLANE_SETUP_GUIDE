@@ -61,7 +61,7 @@ The setup script adds or updates these npm scripts while preserving other script
 
 ```json
 {
-  "fastlane:ios:testflight": "cd ios && bundle exec fastlane testflight"
+  "fastlane:testflight": "cd ios && bundle exec fastlane testflight"
 }
 ```
 
@@ -74,7 +74,7 @@ npm run fastlane:build
 npm run fastlane:internal
 
 # iOS (on macOS)
-npm run fastlane:ios:testflight
+npm run fastlane:testflight
 ```
 
 
@@ -113,7 +113,7 @@ The Google Play Android Developer API must be enabled in the correct Google Clou
 
 | Lane | npm script | Description |
 |------|-----------|-------------|
-| `testflight` | `fastlane:ios:testflight` | Build + upload to TestFlight and first change the Version and Build
+| `testflight` | `fastlane:testflight` | Build + upload to TestFlight and first change the Version and Build
 
 
 ## Troubleshooting: `assembleRelease` exits with code 1
