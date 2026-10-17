@@ -59,8 +59,7 @@ try {
     Write-Host "Detected application ID: $ApplicationId" -ForegroundColor Green
 
 
-Write-Step "Updating package.json scripts"
-
+$ErrorActionPreference = "Stop"
 $NodeScript = @'
 const fs = require("fs");
 const path = require("path");
@@ -70,13 +69,13 @@ const backupPath = packagePath + ".backup";
 const tempPath = packagePath + "." + process.pid + ".tmp";
 
 const scriptsToAdd = {
-  "aab": "cd android&&gradlew bundleRelease",
+  "aab":"cd android&&gradlew bundleRelease",
   "release": "cd android&&gradlew assembleRelease",
-  "fastlane:build": "cd android&&bundle exec fastlane build",
-  "fastlane:apk": "cd android&&bundle exec fastlane apk",
-  "fastlane:deploy": "cd android&&bundle exec fastlane deploy",
-  "fastlane:internal": "cd android&&bundle exec fastlane internal",
-  "fastlane:testflight": "cd ios&&bundle exec fastlane testflight"
+  "fastlane:build": "cd android && bundle exec fastlane build",
+  "fastlane:apk": "cd android && bundle exec fastlane apk",
+  "fastlane:deploy": "cd android && bundle exec fastlane deploy",
+  "fastlane:internal": "cd android && bundle exec fastlane internal",
+  "fastlane:testflight": "cd ios && bundle exec fastlane testflight"
 };
 
 let original;
@@ -91,7 +90,7 @@ let packageJson;
 try {
   packageJson = JSON.parse(original.toString("utf8").replace(/^\uFEFF/, ""));
 } catch (error) {
-  console.error(`Existing package.json is invalid; no changes made. ${error.message}`);
+  console.error(`package.json is invalid. No changes made. ${error.message}`);
   process.exit(2);
 }
 
@@ -106,12 +105,12 @@ if (!packageJson.scripts || typeof packageJson.scripts !== "object" || Array.isA
 
 Object.assign(packageJson.scripts, scriptsToAdd);
 
-const output = JSON.stringify(packageJson, null, 2) + "\n";
+const output = JSON.stringify(packageJson) + "\n";
 
 try {
   JSON.parse(output);
 } catch (error) {
-  console.error(`Generated JSON is invalid. ${error.message}`);
+  console.error(`Generated JSON is invalid: ${error.message}`);
   process.exit(2);
 }
 
@@ -127,84 +126,33 @@ try {
   process.exit(3);
 }
 
-let tempCreated = false;
-let originalReplaced = false;
-
 try {
   fs.writeFileSync(tempPath, output, { encoding: "utf8", flag: "wx" });
-  tempCreated = true;
-
   JSON.parse(fs.readFileSync(tempPath, "utf8"));
-
   fs.renameSync(tempPath, packagePath);
-  tempCreated = false;
-  originalReplaced = true;
-
   JSON.parse(fs.readFileSync(packagePath, "utf8"));
-  console.log("package.json updated and JSON-validated successfully.");
+  console.log("package.json updated, formatted with two-space indentation, and validated successfully.");
 } catch (error) {
-  if (tempCreated) {
-    try {
-      fs.unlinkSync(tempPath);
-    } catch {}
-  }
-
-  if (originalReplaced) {
-    try {
-      fs.writeFileSync(packagePath, original);
-      console.error("Original package.json restored.");
-    } catch (restoreError) {
-      console.error(`CRITICAL: Restore failed: ${restoreError.message}`);
-      console.error(`Recover the original from: ${backupPath}`);
-    }
-  }
+  try {
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+  } catch {}
 
   console.error(`Could not safely update package.json: ${error.message}`);
   process.exit(4);
 }
 '@
 
-$TempNodeScript = Join-Path ([System.IO.Path]::GetTempPath()) ("update-package-json-" + [guid]::NewGuid().ToString("N") + ".cjs")
-$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText($TempNodeScript, $NodeScript, $Utf8NoBom)
+$ScriptPath = Join-Path $env:TEMP ("update-package-json-" + [guid]::NewGuid().ToString("N") + ".cjs")
+[System.IO.File]::WriteAllText($ScriptPath, $NodeScript, [System.Text.UTF8Encoding]::new($false))
 
 try {
-    & node $TempNodeScript $PackageJsonPath
+    & node $ScriptPath $PackageJsonPath
     if ($LASTEXITCODE -ne 0) {
-        throw "Node.js failed to update package.json (exit code $LASTEXITCODE)."
+        throw "package.json update failed with exit code $LASTEXITCODE. Fix or restore the file before running npm commands."
     }
 }
 finally {
-    Remove-Item -LiteralPath $TempNodeScript -Force -ErrorAction SilentlyContinue
-}
-
-# Validate before running Prettier.
-try {
-    $null = Get-Content -LiteralPath $PackageJsonPath -Raw | ConvertFrom-Json -ErrorAction Stop
-}
-catch {
-    throw "package.json failed validation before formatting: $($_.Exception.Message)"
-}
-
-# Format only after Node.js has confirmed the file is valid JSON.
-$PrettierCommand = Get-Command npx -ErrorAction SilentlyContinue
-if ($PrettierCommand) {
-    & npx --no-install prettier --write $PackageJsonPath
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "Prettier could not run; package.json is still valid JSON. You can format it later." -ForegroundColor Yellow
-    }
-}
-else {
-    Write-Host "npx was not found; package.json was not formatted with Prettier." -ForegroundColor Yellow
-}
-
-# Final validation after formatting.
-try {
-    $null = Get-Content -LiteralPath $PackageJsonPath -Raw | ConvertFrom-Json -ErrorAction Stop
-    Write-Host "package.json updated and validated successfully." -ForegroundColor Green
-}
-catch {
-    throw "package.json failed final validation. Restore a known-good backup before running npm commands. $($_.Exception.Message)"
+    Remove-Item -LiteralPath $ScriptPath -Force -ErrorAction SilentlyContinue
 }
 
 
