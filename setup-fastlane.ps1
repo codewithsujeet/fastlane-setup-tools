@@ -58,70 +58,7 @@ try {
 
     Write-Host "Detected application ID: $ApplicationId" -ForegroundColor Green
 
-    Write-Step "Updating package.json scripts"
-
-    try {
-        $PackageJson = Get-Content -LiteralPath $PackageJsonPath -Raw |
-            ConvertFrom-Json
-    }
-    catch {
-        throw "Could not parse package.json. Check that it contains valid JSON."
-    }
-
-    if ($null -eq $PackageJson.scripts) {
-        $PackageJson |
-            Add-Member -MemberType NoteProperty `
-                -Name "scripts" `
-                -Value ([PSCustomObject]@{})
-    }
-
-    $NewScripts = [ordered]@{
-        "aab"               = "cd android&&gradlew bundleRelease"
-        "release"           = "cd android&&gradlew assembleRelease"
-        "fastlane:build"    = "cd android && bundle exec fastlane build"
-        "fastlane:apk"      = "cd android && bundle exec fastlane apk"
-        "fastlane:deploy"   = "cd android && bundle exec fastlane deploy"
-        "fastlane:internal" = "cd android && bundle exec fastlane internal"
-        "fastlane:testflight" = "cd ios && bundle exec fastlane testflight"
-    }
-
-    foreach ($Entry in $NewScripts.GetEnumerator()) {
-        $ExistingProperty = $PackageJson.scripts.PSObject.Properties[$Entry.Key]
-
-        if ($null -ne $ExistingProperty) {
-            $PackageJson.scripts.($Entry.Key) = $Entry.Value
-        }
-        else {
-            $PackageJson.scripts |
-                Add-Member -MemberType NoteProperty `
-                    -Name $Entry.Key `
-                    -Value $Entry.Value
-        }
-
-        Write-Host "Updated npm script: $($Entry.Key)" -ForegroundColor Green
-    }
-
-    $JsonContent = $PackageJson | ConvertTo-Json -Depth 100
-    $JsonContent = $JsonContent.Replace('\u0026', '&')
-    $JsonContent = $JsonContent.Replace('\u003e', '>')
-    $JsonContent = $JsonContent.Replace('\u003c', '<')
-
-    Set-Content `
-        -LiteralPath $PackageJsonPath `
-        -Value $JsonContent `
-        -Encoding UTF8
-
-    try {
-        Get-Content -LiteralPath $PackageJsonPath -Raw |
-            ConvertFrom-Json |
-            Out-Null
-    }
-    catch {
-        throw "The updated package.json is invalid JSON."
-    }
-
-    Write-Host "package.json updated and formatted successfully." -ForegroundColor Green
-    }
+ }
 
     if ($HasAndroid) {
     $FastlanePath = Join-Path $AndroidPath "fastlane"
