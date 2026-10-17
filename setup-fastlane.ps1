@@ -17,16 +17,21 @@ try {
     $ProjectPath = (Resolve-Path -LiteralPath $ProjectPath).Path
     $AndroidPath = Join-Path $ProjectPath "android"
     $AppPath = Join-Path $AndroidPath "app"
+    $IosPath = Join-Path $ProjectPath "ios"
+    $HasAndroid = Test-Path -LiteralPath $AppPath -PathType Container
+    $HasIOS = Test-Path -LiteralPath $IosPath -PathType Container
     $PackageJsonPath = Join-Path $ProjectPath "package.json"
 
     if (-not (Test-Path -LiteralPath $PackageJsonPath)) {
         throw "package.json not found. Run this script from your React Native project root."
     }
 
-    if (-not (Test-Path -LiteralPath $AppPath)) {
-        throw "Android app folder not found: $AppPath"
+    if (-not $HasAndroid -and -not $HasIOS) {
+        throw "Neither android/app nor ios folder was found in: $ProjectPath"
     }
 
+    $ApplicationId = $null
+    if ($HasAndroid) {
     $GradleFile = @(
         (Join-Path $AppPath "build.gradle"),
         (Join-Path $AppPath "build.gradle.kts")
@@ -77,6 +82,7 @@ try {
         "fastlane:apk"      = "cd android && bundle exec fastlane apk"
         "fastlane:deploy"   = "cd android && bundle exec fastlane deploy"
         "fastlane:internal" = "cd android && bundle exec fastlane internal"
+        "fastlane:testflight" = "cd ios && bundle exec fastlane testflight"
     }
 
     foreach ($Entry in $NewScripts.GetEnumerator()) {
@@ -115,8 +121,9 @@ try {
     }
 
     Write-Host "package.json updated and formatted successfully." -ForegroundColor Green
+    }
 
-
+    if ($HasAndroid) {
     $FastlanePath = Join-Path $AndroidPath "fastlane"
 
     New-Item -ItemType Directory -Path $FastlanePath -Force |
@@ -129,7 +136,7 @@ gem "fastlane"
 '@
 
     $AppfileContent = @'
-json_key_file("./fastlane/e-oms.json")
+json_key_file("./fastlane/__ANDROID_PROJECT_JSON__.json")
 package_name("__ANDROID_APPLICATION_ID__")
 '@
 
@@ -137,6 +144,40 @@ package_name("__ANDROID_APPLICATION_ID__")
         "__ANDROID_APPLICATION_ID__",
         $ApplicationId
     )
+
+    # Create the expected Android service-account JSON path as a template.
+    # Replace this template with the real JSON downloaded from Google Play Console before deployment.
+    $AndroidProjectName = $null
+    try {
+        $AndroidPackageJsonObject = Get-Content -LiteralPath $PackageJsonPath -Raw | ConvertFrom-Json
+        $AndroidProjectName = [string]$AndroidPackageJsonObject.name
+    }
+    catch { $AndroidProjectName = $null }
+    if ([string]::IsNullOrWhiteSpace($AndroidProjectName)) {
+        $AndroidProjectName = Split-Path -Leaf $ProjectPath
+    }
+    $SafeAndroidProjectName = ($AndroidProjectName -replace '[^A-Za-z0-9._-]', '-')
+    if ([string]::IsNullOrWhiteSpace($SafeAndroidProjectName)) {
+        $SafeAndroidProjectName = "react-native-app"
+    }
+    # Fastlane's json_key_file must point to a real Google Play service-account JSON.
+    # The generated template is intentionally non-functional until replaced with the real downloaded key.
+    $AndroidProjectJsonPath = Join-Path $FastlanePath ($SafeAndroidProjectName + ".json")
+    $AppfileContent = $AppfileContent.Replace("__ANDROID_PROJECT_JSON__", $SafeAndroidProjectName)
+    $AndroidProjectJsonObject = [ordered]@{
+        type = "service_account"
+        project_id = "REPLACE_WITH_GOOGLE_CLOUD_PROJECT_ID"
+        private_key_id = "REPLACE_WITH_PRIVATE_KEY_ID"
+        private_key = "REPLACE_WITH_PRIVATE_KEY_FROM_GOOGLE_SERVICE_ACCOUNT_JSON"
+        client_email = "REPLACE_WITH_SERVICE_ACCOUNT_EMAIL"
+        client_id = "REPLACE_WITH_SERVICE_ACCOUNT_CLIENT_ID"
+        auth_uri = "https://accounts.google.com/o/oauth2/auth"
+        token_uri = "https://oauth2.googleapis.com/token"
+        auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+        client_x509_cert_url = "REPLACE_WITH_CLIENT_CERTIFICATE_URL"
+        universe_domain = "googleapis.com"
+    }
+    $AndroidProjectJsonContent = $AndroidProjectJsonObject | ConvertTo-Json -Depth 5
 
     $FastfileContent = @'
 default_platform(:android)
@@ -213,6 +254,10 @@ end
         @{
             Path = Join-Path $FastlanePath "Fastfile"
             Content = $FastfileContent
+        },
+        @{
+            Path = $AndroidProjectJsonPath
+            Content = $AndroidProjectJsonContent
         }
     )
 
@@ -243,44 +288,282 @@ end
 
         Write-Host "Created: $($File.Path)" -ForegroundColor Green
     }
+    }
+
+    Write-Step "Detecting iOS Fastlane configuration"
+
+    if ($HasIOS) {
+        $XcodeProject = Get-ChildItem -LiteralPath $IosPath -Directory -Filter "*.xcodeproj" |
+            Select-Object -First 1
+        $PbxprojPath = $null
+        if ($XcodeProject) {
+            $PbxprojPath = Join-Path $XcodeProject.FullName "project.pbxproj"
+        }
+
+        $IosBundleId = $null
+        $IosTeamId = $null
+        if ($PbxprojPath -and (Test-Path -LiteralPath $PbxprojPath)) {
+            $PbxprojContent = Get-Content -LiteralPath $PbxprojPath -Raw
+
+            $BundleMatches = [regex]::Matches(
+                $PbxprojContent,
+                'PRODUCT_BUNDLE_IDENTIFIER\s*=\s*([^;]+);'
+            )
+            foreach ($BundleMatch in $BundleMatches) {
+                $Candidate = $BundleMatch.Groups[1].Value.Trim().Trim('"')
+                if ($Candidate -and $Candidate -notmatch '\$\(' -and $Candidate -notmatch '\*' -and $Candidate -notmatch '(Tests|UITests)$') {
+                    $IosBundleId = $Candidate
+                    break
+                }
+            }
+
+            $TeamMatch = [regex]::Match(
+                $PbxprojContent,
+                'DEVELOPMENT_TEAM\s*=\s*([A-Z0-9]+);'
+            )
+            if ($TeamMatch.Success) {
+                $IosTeamId = $TeamMatch.Groups[1].Value.Trim()
+            }
+        }
+
+        # Prefer an explicitly shared Xcode scheme; fall back to the project name.
+        $Scheme = $null
+        $SharedSchemesPath = Join-Path $IosPath "fastlane"
+        $SchemeFiles = Get-ChildItem -LiteralPath $IosPath -Recurse -File -Filter "*.xcscheme" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\.xcodeproj[\\/]xcshareddata[\\/]xcschemes[\\/]|\.xcworkspace[\\/]xcshareddata[\\/]xcschemes[\\/]' }
+        if ($SchemeFiles) {
+            $Scheme = [System.IO.Path]::GetFileNameWithoutExtension($SchemeFiles[0].Name)
+        }
+        if (-not $Scheme -and $XcodeProject) {
+            $Scheme = [System.IO.Path]::GetFileNameWithoutExtension($XcodeProject.Name)
+        }
+
+        if (-not $IosBundleId) {
+            $IosBundleId = Read-Host "Could not detect iOS bundle ID. Enter app_identifier (e.g. com.example.app)"
+        } else {
+            Write-Host "Detected iOS bundle ID: $IosBundleId" -ForegroundColor Green
+        }
+
+        if (-not $IosTeamId) {
+            $IosTeamId = Read-Host "Could not detect Apple Developer Team ID. Enter team_id"
+        } else {
+            Write-Host "Detected Apple Developer Team ID: $IosTeamId" -ForegroundColor Green
+        }
+
+        if (-not $Scheme) {
+            $Scheme = Read-Host "Could not detect Xcode scheme. Enter scheme name"
+        } else {
+            Write-Host "Detected Xcode scheme: $Scheme" -ForegroundColor Green
+        }
+
+        # Apple ID email is not stored reliably in an Xcode project, so use an environment
+        # variable when set, otherwise ask the developer. It is not guessed from the project.
+        $AppleId = $env:FASTLANE_APPLE_ID
+        if ([string]::IsNullOrWhiteSpace($AppleId)) {
+            $AppleId = Read-Host "Enter Apple ID email (used by Fastlane Appfile)"
+        }
+
+        if ([string]::IsNullOrWhiteSpace($IosBundleId) -or
+            [string]::IsNullOrWhiteSpace($IosTeamId) -or
+            [string]::IsNullOrWhiteSpace($Scheme) -or
+            [string]::IsNullOrWhiteSpace($AppleId)) {
+            throw "iOS Fastlane values cannot be empty."
+        }
+
+        $IosFastlanePath = Join-Path $IosPath "fastlane"
+        New-Item -ItemType Directory -Path $IosFastlanePath -Force | Out-Null
+
+        $IosAppfileContent = @'
+app_identifier("__IOS_BUNDLE_ID__")
+apple_id("__APPLE_ID__")
+team_id("__IOS_TEAM_ID__")
+'@
+        $IosAppfileContent = $IosAppfileContent.Replace("__IOS_BUNDLE_ID__", $IosBundleId).
+            Replace("__APPLE_ID__", $AppleId).
+            Replace("__IOS_TEAM_ID__", $IosTeamId)
+
+        # Generate a stable AuthKeyNNNNN.p8 filename. Reuse an existing generated filename on reruns.
+        $ExistingAuthKey = Get-ChildItem -LiteralPath $IosFastlanePath -Filter "AuthKey[0-9][0-9][0-9][0-9][0-9].p8" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($ExistingAuthKey) {
+            $IosAuthKeyFileName = $ExistingAuthKey.Name
+        }
+        else {
+            $AuthKeyNumber = Get-Random -Minimum 10000 -Maximum 100000
+            $IosAuthKeyFileName = "AuthKey$AuthKeyNumber.p8"
+        }
+
+        $IosFastfileContent = @'
+default_platform(:ios)
+
+platform :ios do
+
+  desc "Build and upload to TestFlight"
+  lane :testflight do
+
+    api_key = app_store_connect_api_key(
+      key_id: "KHK7587878",
+      issuer_id: "frte03b-6fb2-4089-be60-8071d381abf5",
+      key_filepath: "./fastlane/__IOS_AUTHKEY_FILENAME__",
+      duration: 1200,
+      in_house: false
+    )
+
+    build_app(
+      scheme: "__IOS_SCHEME__",
+      export_method: "app-store"
+    )
+
+    upload_to_testflight(
+      api_key: api_key,
+      skip_waiting_for_build_processing: true
+    )
+  end
+end
+'@
+        $IosFastfileContent = $IosFastfileContent.Replace("__IOS_SCHEME__", $Scheme).Replace("__IOS_AUTHKEY_FILENAME__", $IosAuthKeyFileName)
+
+        $IosGemfileContent = @'
+source "https://rubygems.org"
+
+gem "fastlane"
+'@
+
+        # Remove the previously generated iOS project JSON metadata file only when it is
+        # clearly the old generated template. Do not delete unrelated/user-owned JSON files.
+        $OldProjectName = $null
+        try {
+            $PackageJsonObject = Get-Content -LiteralPath $PackageJsonPath -Raw | ConvertFrom-Json
+            $OldProjectName = [string]$PackageJsonObject.name
+        }
+        catch { $OldProjectName = $null }
+        if ([string]::IsNullOrWhiteSpace($OldProjectName)) {
+            $OldProjectName = Split-Path -Leaf $ProjectPath
+        }
+        $OldSafeProjectName = ($OldProjectName -replace '[^A-Za-z0-9._-]', '-')
+        if (-not [string]::IsNullOrWhiteSpace($OldSafeProjectName)) {
+            $OldIosJsonPath = Join-Path $IosFastlanePath ($OldSafeProjectName + ".json")
+            if (Test-Path -LiteralPath $OldIosJsonPath -PathType Leaf) {
+                try {
+                    $OldJson = Get-Content -LiteralPath $OldIosJsonPath -Raw | ConvertFrom-Json
+                    if ($OldJson.app_store_connect -and $OldJson.project_name) {
+                        Remove-Item -LiteralPath $OldIosJsonPath -Force
+                        Write-Host "Removed old generated iOS metadata JSON: $OldIosJsonPath" -ForegroundColor Yellow
+                    }
+                }
+                catch {
+                    Write-Host "Kept existing iOS JSON because its contents could not be verified: $OldIosJsonPath" -ForegroundColor Yellow
+                }
+            }
+        }
+
+        # Create a clearly marked placeholder at the generated filename. Replace its contents
+        # with the real private key downloaded from App Store Connect before using TestFlight.
+        $P8PlaceholderPath = Join-Path $IosFastlanePath $IosAuthKeyFileName
+        if (-not (Test-Path -LiteralPath $P8PlaceholderPath -PathType Leaf)) {
+            $P8PlaceholderContent = @'
+PLACEHOLDER ONLY - NOT A VALID APP STORE CONNECT PRIVATE KEY.
+Replace this entire file with the real .p8 key downloaded from App Store Connect.
+Do not commit the real private key to source control.
+'@
+            Set-Content -LiteralPath $P8PlaceholderPath -Value $P8PlaceholderContent -Encoding ASCII
+            Write-Host "Created key placeholder: $P8PlaceholderPath" -ForegroundColor Yellow
+        }
+
+        $IosFiles = @(
+            @{
+                Path = Join-Path $IosFastlanePath "Appfile"
+                Content = $IosAppfileContent
+            },
+            @{
+                Path = Join-Path $IosFastlanePath "Fastfile"
+                Content = $IosFastfileContent
+            },
+            @{
+                Path = Join-Path $IosPath "Gemfile"
+                Content = $IosGemfileContent
+            }
+        )
+
+        Write-Step "Generating iOS Fastlane files"
+        foreach ($File in $IosFiles) {
+            if ((Test-Path -LiteralPath $File.Path) -and -not $Force) {
+                $Answer = Read-Host "File exists: $($File.Path). Overwrite? (y/N)"
+                if ($Answer.Trim() -notin @("", "y", "Y", "yes", "YES")) {
+                    Write-Host "Preserving existing file: $($File.Path)" -ForegroundColor Yellow
+                    continue
+                }
+            }
+
+            if (Test-Path -LiteralPath $File.Path) {
+                $BackupPath = "$($File.Path).backup"
+                if (-not (Test-Path -LiteralPath $BackupPath)) {
+                    Copy-Item -LiteralPath $File.Path -Destination $BackupPath
+                    Write-Host "Backup created: $BackupPath" -ForegroundColor Yellow
+                }
+            }
+
+            Set-Content -LiteralPath $File.Path -Value $File.Content -Encoding UTF8
+            Write-Host "Created: $($File.Path)" -ForegroundColor Green
+        }
+
+        Write-Host "iOS bundle ID: $IosBundleId"
+        Write-Host "Apple ID: $AppleId"
+        Write-Host "Team ID: $IosTeamId"
+        Write-Host "Scheme: $Scheme"
+        Write-Host "iOS API key filename: $IosAuthKeyFileName" -ForegroundColor Green
+        Write-Host "Replace the placeholder at ios/fastlane/$IosAuthKeyFileName with the real .p8 downloaded from App Store Connect." -ForegroundColor Yellow
+        Write-Host "ASC_KEY_ID and ASC_ISSUER_ID must be copied from App Store Connect; they cannot be random values." -ForegroundColor Yellow
+        Write-Host "Optional: set ASC_KEY_PATH if your real key is stored at another path." -ForegroundColor Yellow
+        Write-Host "Note: iOS builds/TestFlight uploads must run on macOS with Xcode." -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "No ios folder found; skipping iOS Fastlane setup." -ForegroundColor Yellow
+    }
 
     Write-Step "Checking Ruby and Bundler"
 
-    if (-not (Get-Command ruby -ErrorAction SilentlyContinue)) {
-        throw "Ruby was not found. Install Ruby with DevKit from https://rubyinstaller.org/, reopen the terminal, and rerun this script."
-    }
-
-    if (-not (Get-Command gem -ErrorAction SilentlyContinue)) {
-        throw "RubyGems command was not found. Verify your Ruby installation and PATH."
-    }
-
-    if (-not (Get-Command bundle -ErrorAction SilentlyContinue)) {
-        Write-Host "Bundler command not found. Installing Bundler..." -ForegroundColor Yellow
-
-        & gem install bundler
-
-        if ($LASTEXITCODE -ne 0) {
-            throw "Could not install Bundler. Run 'gem install bundler' manually and retry."
+    $BundleCommand = Get-Command bundle -ErrorAction SilentlyContinue
+    if (-not $BundleCommand) {
+        if (-not (Get-Command ruby -ErrorAction SilentlyContinue) -or -not (Get-Command gem -ErrorAction SilentlyContinue)) {
+            Write-Host "Ruby/Bundler is not installed. Fastlane files were generated, but Gemfile.lock cannot be resolved on this machine." -ForegroundColor Yellow
+            Write-Host "Install Ruby and Bundler, then run 'bundle install' inside each platform folder." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "Bundler command not found. Installing Bundler..." -ForegroundColor Yellow
+            & gem install bundler
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not install Bundler. Run 'gem install bundler' manually and retry."
+            }
         }
     }
 
-    if (-not (Get-Command bundle -ErrorAction SilentlyContinue)) {
-        throw "Bundler is still not available. Restart the terminal and rerun the setup script."
-    }
-
-    Write-Step "Running bundle install in android folder"
-
-    Push-Location $AndroidPath
-
-    try {
-        & bundle install
-
-        if ($LASTEXITCODE -ne 0) {
-            throw "bundle install failed with exit code $LASTEXITCODE. Fix the dependency or network error and rerun the script."
+    if (Get-Command bundle -ErrorAction SilentlyContinue) {
+        if ($HasAndroid) {
+            Write-Step "Running bundle install in android folder (creates android/Gemfile.lock)"
+            Push-Location $AndroidPath
+            try {
+                & bundle install
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Android bundle install failed with exit code $LASTEXITCODE."
+                }
+            }
+            finally { Pop-Location }
         }
-    }
-    finally {
-        Pop-Location
+
+        if ($HasIOS) {
+            Write-Step "Running bundle install in ios folder (creates ios/Gemfile.lock)"
+            Push-Location $IosPath
+            try {
+                & bundle install
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "iOS bundle install failed on this machine. iOS Fastlane files remain generated; retry 'bundle install' in ios on macOS with Ruby/Bundler installed." -ForegroundColor Yellow
+                }
+                elseif (Test-Path -LiteralPath (Join-Path $IosPath "Gemfile.lock") -PathType Leaf) {
+                    Write-Host "Created/updated ios/Gemfile.lock" -ForegroundColor Green
+                }
+            }
+            finally { Pop-Location }
+        }
     }
 
     Write-Host ""
@@ -289,7 +572,7 @@ end
     Write-Host "============================================" -ForegroundColor Green
 
     Write-Host "Project: $ProjectPath"
-    Write-Host "Application ID: $ApplicationId"
+    if ($ApplicationId) { Write-Host "Application ID: $ApplicationId" }
     Write-Host ""
     Write-Host "Run from the project root:"
     Write-Host '  PowerShell: powershell -NoProfile -ExecutionPolicy Bypass -File ".\setup-fastlane.ps1"'
@@ -302,9 +585,21 @@ end
     Write-Host "  npm run fastlane:apk"
     Write-Host "  npm run fastlane:internal"
     Write-Host "  npm run fastlane:deploy"
+    if ($HasIOS) {
+        Write-Host "  npm run fastlane:testflight"
+    }
     Write-Host ""
     Write-Host "Note: fastlane:deploy defaults to production unless a track is supplied." -ForegroundColor Yellow
-    Write-Host "Google Play credentials must be available at android/fastlane/e-oms.json." -ForegroundColor Yellow
+    if ($HasAndroid) {
+        $AndroidJsonName = $SafeAndroidProjectName + ".json"
+        Write-Host "Replace android/fastlane/$AndroidJsonName with the real Google Play service-account JSON before deploying." -ForegroundColor Yellow
+    }
+    if ($HasIOS) {
+        Write-Host "Replace the generated ios/fastlane/$IosAuthKeyFileName placeholder with the real .p8 private key from App Store Connect." -ForegroundColor Yellow
+        Write-Host "ASC_KEY_ID and ASC_ISSUER_ID must be the actual values from App Store Connect; random values will not authenticate." -ForegroundColor Yellow
+        Write-Host "Never commit the .p8 private key to Git." -ForegroundColor Yellow
+        Write-Host "Run iOS build/TestFlight lanes on macOS with Xcode installed." -ForegroundColor Yellow
+    }
 }
 catch {
     Write-Host ""

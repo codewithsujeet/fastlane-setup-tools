@@ -13,7 +13,7 @@ $ErrorActionPreference = "Stop"
 
 $RepoOwner = "codewithsujeet"
 $RepoName = "fastlane-setup-tools"
-$Branch = "master"
+$Branch = "feat/fastlane-iOS"
 
 $FilesToInstall = @(
     @{

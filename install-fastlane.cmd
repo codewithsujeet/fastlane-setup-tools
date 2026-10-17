@@ -6,7 +6,7 @@ REM START: FASTLANE TOOLS INSTALLER LAUNCHER FOR CMD
 REM Run this from the root of your React Native project.
 REM ============================================================
 
-set "INSTALLER_URL=https://raw.githubusercontent.com/codewithsujeet/fastlane-setup-tools/master/install-fastlane.ps1"
+set "INSTALLER_URL=https://raw.githubusercontent.com/codewithsujeet/fastlane-setup-tools/feat/fastlane-iOS/install-fastlane.ps1"
 set "INSTALLER_FILE=%TEMP%\install-fastlane.ps1"
 
 echo Downloading Fastlane installer...

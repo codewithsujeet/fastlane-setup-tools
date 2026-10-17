@@ -1,6 +1,6 @@
 # Team-friendly local Fastlane setup for React Native (Windows)
 
-This setup keeps Fastlane build and Google Play upload scripts in the React Native project repository. Team members receive the scripts through normal Git clone/pull. Google Play service-account credentials must remain local and must never be committed.
+This setup keeps Fastlane build and upload scripts for **Android** (Google Play) and **iOS** (TestFlight / App Store) in the React Native project repository. Team members receive the scripts through normal Git clone/pull. Credentials and private keys must remain local and must never be committed.
 
 
 ## Install the fastlane run these command in powershell
@@ -17,20 +17,22 @@ gem install fastlane -NV
 1. Copy `setup-fastlane.ps1`, `setup-fastlane.cmd`, and this guide into the React Native project root, alongside `package.json`.
 2. Run `setup-fastlane.cmd` from CMD, or run `powershell -NoProfile -ExecutionPolicy Bypass -File "setup-fastlane.ps1"` from PowerShell.
 3. Review `android/fastlane/Appfile` and confirm `package_name` matches the app's Google Play application ID.
-4. Commit the setup scripts and generated `android/Gemfile`, `android/fastlane/Appfile`, and `android/fastlane/Fastfile` to the project repository.
+4. Review `ios/fastlane/Appfile` and confirm `app_identifier`, `apple_id`, and `team_id` are correct.
+5. Commit the setup scripts and generated files to the project repository.
 
 If generated Fastlane files already exist and should intentionally be replaced, run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "setup-fastlane.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "setup-fastlane.ps1" -Force
 ```
-
-
 
 
 ## Requirements
 
 Each developer needs Ruby with DevKit, Bundler, a compatible JDK, Android SDK/build tools, a valid Android release signing configuration, and authorized Google Play credentials for uploads.
+
+For iOS: a Mac with Xcode, an Apple Developer account, and an App Store Connect API key (.p8).
+
 
 ## Local setup and build commands
 
@@ -41,6 +43,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "setup-fastlane.ps1"
 ```
 
 The setup script adds or updates these npm scripts while preserving other scripts:
+
+### Android scripts
 
 ```json
 {
@@ -53,13 +57,26 @@ The setup script adds or updates these npm scripts while preserving other script
 }
 ```
 
+### iOS scripts (must run on macOS)
+
+```json
+{
+  "fastlane:testflight": "cd ios && bundle exec fastlane testflight"
+}
+```
+
 Run them from the project root, for example:
 
 ```powershell
+# Android
 npm run fastlane:apk
 npm run fastlane:build
 npm run fastlane:internal
+
+# iOS (on macOS)
+npm run fastlane:testflight
 ```
+
 
 ## Google Play credentials
 
@@ -68,6 +85,36 @@ The Appfile expects the local credential file at `android/fastlane/e-oms.json`.
 Each uploader must be authorized in Google Play Console and use credentials provided through the organization's approved secret-handling process. Never commit, email, or paste service-account JSON or private keys into chat. If a credential file was exposed, revoke its key in Google Cloud and create a replacement.
 
 The Google Play Android Developer API must be enabled in the correct Google Cloud project, and the service account must have the required app and track permissions in Play Console. This setup does not bypass Google Play authorization.
+
+
+## iOS / App Store Connect credentials
+
+### App Store Connect API Key (.p8)
+
+1. Go to **App Store Connect → Users and Access → Keys**.
+2. Generate an API key with the **App Manager** role (or higher).
+3. Download the `.p8` private key file — **this is a one-time download!**
+4. Note the **Key ID** and **Issuer ID** displayed on the page.
+5. Place the `.p8` file at `ios/fastlane/AuthKey.p8`.
+6. Edit `ios/fastlane/Fastfile` and change the key_id, issuer_id and key_filepath.
+
+
+
+## Generated iOS files
+
+| File | Purpose |
+|------|---------|
+| `ios/Gemfile` | Ruby gem dependencies (fastlane + plugins) |
+| `ios/fastlane/Appfile` | App identifier, Apple ID, team ID |
+| `ios/fastlane/Fastfile` | All lane definitions (beta, release, build, testflight, etc.) |
+
+
+## iOS lane reference
+
+| Lane | npm script | Description |
+|------|-----------|-------------|
+| `testflight` | `fastlane:testflight` | Build + upload to TestFlight and first change the Version and Build
+
 
 ## Troubleshooting: `assembleRelease` exits with code 1
 
@@ -96,10 +143,19 @@ bundle exec fastlane apk
 
 Look above the final `BUILD FAILED` line for `What went wrong`, `Execution failed for task`, `Caused by`, `Could not resolve`, or signing, keystore, SDK, CMake, NDK, and C++ compiler errors.
 
+
+## Troubleshooting: iOS common issues
+### "No .p8 file found"
+Place your downloaded `.p8` key at `ios/fastlane/AuthKey.p8`. Remember: this file is a one-time download from Apple.
+
+### "Scheme not found"
+Ensure your Xcode scheme is marked as **Shared** in Xcode:
+Product → Scheme → Manage Schemes → check the "Shared" checkbox.
+
+
 ## Important notes
 
 - The `build` lane creates `android/app/build/outputs/bundle/release/app-release.aab` and does not upload it.
 - The `apk` lane creates `android/app/build/outputs/apk/release/app-release.apk`.
 - The `internal` lane uploads to the Internal testing track only.
 - Projects using product flavors or custom Gradle variants may need changes to the Gradle task and artifact path in `android/fastlane/Fastfile`.
-
