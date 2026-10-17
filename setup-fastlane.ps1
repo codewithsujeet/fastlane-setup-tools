@@ -60,82 +60,109 @@ try {
 
     Write-Step "Updating package.json scripts"
 
-    try {
-        $PackageJson = Get-Content -LiteralPath $PackageJsonPath -Raw |
-            ConvertFrom-Json
-    }
-    catch {
-        throw "Could not parse package.json. Check that it contains valid JSON."
-    }
+    # Use Node.js to edit package.json. This avoids PowerShell ConvertTo-Json
+    # serialization/encoding differences and writes UTF-8 without a BOM.
+    $NodeScript = @'
+const fs = require("fs");
+const path = require("path");
 
-    if ($null -eq $PackageJson.scripts) {
-        $PackageJson |
-            Add-Member -MemberType NoteProperty `
-                -Name "scripts" `
-                -Value ([PSCustomObject]@{})
-    }
+const packagePath = path.resolve(process.argv[2]);
+const backupPath = packagePath + ".backup";
+const scriptsToAdd = {
+  "aab": "cd android&&gradlew bundleRelease",
+  "release": "cd android&&gradlew assembleRelease",
+  "fastlane:build": "cd android && bundle exec fastlane build",
+  "fastlane:apk": "cd android && bundle exec fastlane apk",
+  "fastlane:deploy": "cd android && bundle exec fastlane deploy",
+  "fastlane:internal": "cd android && bundle exec fastlane internal",
+  "fastlane:testflight": "cd ios && bundle exec fastlane testflight"
+};
 
-    $NewScripts = [ordered]@{
-        "aab"               = "cd android&&gradlew bundleRelease"
-        "release"           = "cd android&&gradlew assembleRelease"
-        "fastlane:build"    = "cd android && bundle exec fastlane build"
-        "fastlane:apk"      = "cd android && bundle exec fastlane apk"
-        "fastlane:deploy"   = "cd android && bundle exec fastlane deploy"
-        "fastlane:internal" = "cd android && bundle exec fastlane internal"
-        "fastlane:testflight" = "cd ios && bundle exec fastlane testflight"
-    }
-
-    foreach ($Entry in $NewScripts.GetEnumerator()) {
-        $ExistingProperty = $PackageJson.scripts.PSObject.Properties[$Entry.Key]
-
-        if ($null -ne $ExistingProperty) {
-            $PackageJson.scripts.($Entry.Key) = $Entry.Value
-        }
-        else {
-            $PackageJson.scripts |
-                Add-Member -MemberType NoteProperty `
-                    -Name $Entry.Key `
-                    -Value $Entry.Value
-        }
-
-        Write-Host "Updated npm script: $($Entry.Key)" -ForegroundColor Green
-    }
-
-    
-# Serialize package.json
-$JsonContent = $PackageJson | ConvertTo-Json -Depth 100
-
-# Write UTF-8 without BOM for consistent Node.js compatibility
-$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-
-[System.IO.File]::WriteAllText(
-    $PackageJsonPath,
-    $JsonContent + [Environment]::NewLine,
-    $Utf8NoBom
-)
-
-# Validate the generated JSON before formatting
+let raw;
 try {
-    $null = Get-Content -LiteralPath $PackageJsonPath -Raw |
-        ConvertFrom-Json -ErrorAction Stop
-}
-catch {
-    throw "Generated package.json is invalid: $($_.Exception.Message)"
+  raw = fs.readFileSync(packagePath, "utf8");
+  // Accept a UTF-8 BOM if one exists in an older package.json.
+  raw = raw.replace(/^\uFEFF/, "");
+} catch (error) {
+  console.error(`Could not read package.json: ${error.message}`);
+  process.exit(1);
 }
 
-Write-Host "package.json generated and validated." -ForegroundColor Green
+let packageJson;
+try {
+  packageJson = JSON.parse(raw);
+} catch (error) {
+  console.error(`Existing package.json is invalid; it was not changed. ${error.message}`);
+  process.exit(2);
+}
 
+if (!packageJson || typeof packageJson !== "object" || Array.isArray(packageJson)) {
+  console.error("package.json must contain a single JSON object.");
+  process.exit(2);
+}
+
+if (!packageJson.scripts || typeof packageJson.scripts !== "object" || Array.isArray(packageJson.scripts)) {
+  packageJson.scripts = {};
+}
+
+// Preserve all existing scripts and update/add only the Fastlane scripts above.
+Object.assign(packageJson.scripts, scriptsToAdd);
+
+try {
+  if (!fs.existsSync(backupPath)) {
+    fs.copyFileSync(packagePath, backupPath);
+    console.log(`Backup created: ${backupPath}`);
+  } else {
+    console.log(`Existing backup preserved: ${backupPath}`);
+  }
+
+  const output = JSON.stringify(packageJson, null, 2) + "\n";
+  // Validate the exact output before writing it.
+  JSON.parse(output);
+  fs.writeFileSync(packagePath, output, { encoding: "utf8" });
+  // Verify the bytes that were actually written.
+  JSON.parse(fs.readFileSync(packagePath, "utf8"));
+  console.log("package.json updated and JSON-validated successfully.");
+} catch (error) {
+  console.error(`Could not safely update package.json: ${error.message}`);
+  process.exit(3);
+}
+'@
+
+    $TempNodeScript = Join-Path ([System.IO.Path]::GetTempPath()) ("update-package-json-" + [guid]::NewGuid().ToString("N") + ".cjs")
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($TempNodeScript, $NodeScript, $Utf8NoBom)
 
     try {
-        Get-Content -LiteralPath $PackageJsonPath -Raw |
-            ConvertFrom-Json |
-            Out-Null
+        & node $TempNodeScript $PackageJsonPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Node.js failed to update package.json (exit code $LASTEXITCODE)."
+        }
     }
-    catch {
-        throw "The updated package.json is invalid JSON."
+    finally {
+        Remove-Item -LiteralPath $TempNodeScript -Force -ErrorAction SilentlyContinue
     }
 
-    Write-Host "package.json updated and formatted successfully." -ForegroundColor Green
+    # Format only after Node.js has confirmed the file is valid JSON.
+    $PrettierCommand = Get-Command npx -ErrorAction SilentlyContinue
+    if ($PrettierCommand) {
+        & npx --no-install prettier --write $PackageJsonPath
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Prettier could not run; package.json is still valid JSON. You can format it later with npx prettier --write package.json." -ForegroundColor Yellow
+        }
+    }
+    else {
+        Write-Host "npx was not found; package.json is valid but was not formatted with Prettier." -ForegroundColor Yellow
+    }
+
+    # Final validation after formatting (if Prettier ran).
+    try {
+        $null = Get-Content -LiteralPath $PackageJsonPath -Raw | ConvertFrom-Json -ErrorAction Stop
+        Write-Host "package.json updated, formatted (when Prettier was available), and validated successfully." -ForegroundColor Green
+    }
+    catch {
+        throw "package.json failed final validation: $($_.Exception.Message)"
+    }
     }
 
     if ($HasAndroid) {
