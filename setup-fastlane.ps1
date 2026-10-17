@@ -116,7 +116,7 @@ try {
     console.log(`Existing backup preserved: ${backupPath}`);
   }
 
-  const output = JSON.stringify(packageJson, null, 2) + "\n";
+  const output = JSON.stringify(packageJson, null, 1) + "\n";
   // Validate the exact output before writing it.
   JSON.parse(output);
   fs.writeFileSync(packagePath, output, { encoding: "utf8" });
