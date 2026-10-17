@@ -101,15 +101,30 @@ try {
         Write-Host "Updated npm script: $($Entry.Key)" -ForegroundColor Green
     }
 
-    $JsonContent = $PackageJson | ConvertTo-Json -Depth 100
-    $JsonContent = $JsonContent.Replace('\u0026', '&')
-    $JsonContent = $JsonContent.Replace('\u003e', '>')
-    $JsonContent = $JsonContent.Replace('\u003c', '<')
+    
+# Serialize package.json
+$JsonContent = $PackageJson | ConvertTo-Json -Depth 100
 
-    Set-Content `
-        -LiteralPath $PackageJsonPath `
-        -Value $JsonContent `
-        -Encoding UTF8
+# Write UTF-8 without BOM for consistent Node.js compatibility
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+[System.IO.File]::WriteAllText(
+    $PackageJsonPath,
+    $JsonContent + [Environment]::NewLine,
+    $Utf8NoBom
+)
+
+# Validate the generated JSON before formatting
+try {
+    $null = Get-Content -LiteralPath $PackageJsonPath -Raw |
+        ConvertFrom-Json -ErrorAction Stop
+}
+catch {
+    throw "Generated package.json is invalid: $($_.Exception.Message)"
+}
+
+Write-Host "package.json generated and validated." -ForegroundColor Green
+
 
     try {
         Get-Content -LiteralPath $PackageJsonPath -Raw |
