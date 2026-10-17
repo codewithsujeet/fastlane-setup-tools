@@ -42,6 +42,20 @@ From the project root, run the setup script if the Fastlane files have not been 
 powershell -NoProfile -ExecutionPolicy Bypass -File "setup-fastlane.ps1"
 ```
 
+Add the scripts
+
+**Copy** these and run in root directoty:
+
+```powershell
+npm pkg set "scripts.aab=cd android&&gradlew bundleRelease"
+npm pkg set "scripts.release=cd android&&gradlew assembleRelease"
+npm pkg set "scripts.fastlane:build=cd android && bundle exec fastlane build"
+npm pkg set "scripts.fastlane:apk=cd android && bundle exec fastlane apk"
+npm pkg set "scripts.fastlane:deploy=cd android && bundle exec fastlane deploy"
+npm pkg set "scripts.fastlane:internal=cd android && bundle exec fastlane internal"
+npm pkg set "scripts.fastlane:testflight=cd ios && bundle exec fastlane testflight"
+```
+
 The setup script adds or updates these npm scripts while preserving other scripts:
 
 ### Android scripts
