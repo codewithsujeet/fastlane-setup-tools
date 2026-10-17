@@ -58,103 +58,70 @@ try {
 
     Write-Host "Detected application ID: $ApplicationId" -ForegroundColor Green
 
+    Write-Step "Updating package.json scripts"
 
-$ErrorActionPreference = "Stop"
-$NodeScript = @'
-const fs = require("fs");
-const path = require("path");
-
-const packagePath = path.resolve(process.argv[2] || "package.json");
-const backupPath = packagePath + ".backup";
-const tempPath = packagePath + "." + process.pid + ".tmp";
-
-const scriptsToAdd = {
-  "aab":"cd android&&gradlew bundleRelease",
-  "release": "cd android&&gradlew assembleRelease",
-  "fastlane:build": "cd android && bundle exec fastlane build",
-  "fastlane:apk": "cd android && bundle exec fastlane apk",
-  "fastlane:deploy": "cd android && bundle exec fastlane deploy",
-  "fastlane:internal": "cd android && bundle exec fastlane internal",
-  "fastlane:testflight": "cd ios && bundle exec fastlane testflight"
-};
-
-let original;
-try {
-  original = fs.readFileSync(packagePath);
-} catch (error) {
-  console.error(`Could not read package.json: ${error.message}`);
-  process.exit(1);
-}
-
-let packageJson;
-try {
-  packageJson = JSON.parse(original.toString("utf8").replace(/^\uFEFF/, ""));
-} catch (error) {
-  console.error(`package.json is invalid. No changes made. ${error.message}`);
-  process.exit(2);
-}
-
-if (!packageJson || typeof packageJson !== "object" || Array.isArray(packageJson)) {
-  console.error("package.json must contain a single JSON object.");
-  process.exit(2);
-}
-
-if (!packageJson.scripts || typeof packageJson.scripts !== "object" || Array.isArray(packageJson.scripts)) {
-  packageJson.scripts = {};
-}
-
-Object.assign(packageJson.scripts, scriptsToAdd);
-
-const output = JSON.stringify(packageJson) + "\n";
-
-try {
-  JSON.parse(output);
-} catch (error) {
-  console.error(`Generated JSON is invalid: ${error.message}`);
-  process.exit(2);
-}
-
-try {
-  if (!fs.existsSync(backupPath)) {
-    fs.copyFileSync(packagePath, backupPath);
-    console.log(`Backup created: ${backupPath}`);
-  } else {
-    console.log(`Existing backup preserved: ${backupPath}`);
-  }
-} catch (error) {
-  console.error(`Could not create backup: ${error.message}`);
-  process.exit(3);
-}
-
-try {
-  fs.writeFileSync(tempPath, output, { encoding: "utf8", flag: "wx" });
-  JSON.parse(fs.readFileSync(tempPath, "utf8"));
-  fs.renameSync(tempPath, packagePath);
-  JSON.parse(fs.readFileSync(packagePath, "utf8"));
-  console.log("package.json updated, formatted with two-space indentation, and validated successfully.");
-} catch (error) {
-  try {
-    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-  } catch {}
-
-  console.error(`Could not safely update package.json: ${error.message}`);
-  process.exit(4);
-}
-'@
-
-$ScriptPath = Join-Path $env:TEMP ("update-package-json-" + [guid]::NewGuid().ToString("N") + ".cjs")
-[System.IO.File]::WriteAllText($ScriptPath, $NodeScript, [System.Text.UTF8Encoding]::new($false))
-
-try {
-    & node $ScriptPath $PackageJsonPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "package.json update failed with exit code $LASTEXITCODE. Fix or restore the file before running npm commands."
+    try {
+        $PackageJson = Get-Content -LiteralPath $PackageJsonPath -Raw |
+            ConvertFrom-Json
     }
-}
-finally {
-    Remove-Item -LiteralPath $ScriptPath -Force -ErrorAction SilentlyContinue
-}
+    catch {
+        throw "Could not parse package.json. Check that it contains valid JSON."
+    }
 
+    if ($null -eq $PackageJson.scripts) {
+        $PackageJson |
+            Add-Member -MemberType NoteProperty `
+                -Name "scripts" `
+                -Value ([PSCustomObject]@{})
+    }
+
+    $NewScripts = [ordered]@{
+        "aab"               = "cd android&&gradlew bundleRelease"
+        "release"           = "cd android&&gradlew assembleRelease"
+        "fastlane:build"    = "cd android && bundle exec fastlane build"
+        "fastlane:apk"      = "cd android && bundle exec fastlane apk"
+        "fastlane:deploy"   = "cd android && bundle exec fastlane deploy"
+        "fastlane:internal" = "cd android && bundle exec fastlane internal"
+        "fastlane:testflight" = "cd ios && bundle exec fastlane testflight"
+    }
+
+    foreach ($Entry in $NewScripts.GetEnumerator()) {
+        $ExistingProperty = $PackageJson.scripts.PSObject.Properties[$Entry.Key]
+
+        if ($null -ne $ExistingProperty) {
+            $PackageJson.scripts.($Entry.Key) = $Entry.Value
+        }
+        else {
+            $PackageJson.scripts |
+                Add-Member -MemberType NoteProperty `
+                    -Name $Entry.Key `
+                    -Value $Entry.Value
+        }
+
+        Write-Host "Updated npm script: $($Entry.Key)" -ForegroundColor Green
+    }
+
+    $JsonContent = $PackageJson | ConvertTo-Json -Depth 100
+    $JsonContent = $JsonContent.Replace('\u0026', '&')
+    $JsonContent = $JsonContent.Replace('\u003e', '>')
+    $JsonContent = $JsonContent.Replace('\u003c', '<')
+
+    Set-Content `
+        -LiteralPath $PackageJsonPath `
+        -Value $JsonContent `
+        -Encoding UTF8
+
+    try {
+        Get-Content -LiteralPath $PackageJsonPath -Raw |
+            ConvertFrom-Json |
+            Out-Null
+    }
+    catch {
+        throw "The updated package.json is invalid JSON."
+    }
+
+    Write-Host "package.json updated and formatted successfully." -ForegroundColor Green
+    }
 
     if ($HasAndroid) {
     $FastlanePath = Join-Path $AndroidPath "fastlane"
@@ -633,9 +600,4 @@ Do not commit the real private key to source control.
         Write-Host "Never commit the .p8 private key to Git." -ForegroundColor Yellow
         Write-Host "Run iOS build/TestFlight lanes on macOS with Xcode installed." -ForegroundColor Yellow
     }
-}
-catch {
-    Write-Host ""
-    Write-Host "Fastlane setup failed: $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
-}
+roundColor Yellow
