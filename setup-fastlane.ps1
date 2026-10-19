@@ -64,71 +64,70 @@ try {
     Write-Step "Updating package.json scripts"
 
     try {
-        $PackageJson = Get-Content -LiteralPath $PackageJsonPath -Raw |
-            ConvertFrom-Json
+        $PackageJsonText = [System.IO.File]::ReadAllText($PackageJsonPath)
+        $PackageJson = $PackageJsonText | ConvertFrom-Json -ErrorAction Stop
     }
     catch {
-        throw "Could not parse package.json. Check that it contains valid JSON."
+        throw "Could not parse package.json. Check that it contains valid JSON. Details: $($_.Exception.Message)"
     }
 
-    if ($null -eq $PackageJson.scripts) {
-        $PackageJson |
-            Add-Member -MemberType NoteProperty `
-                -Name "scripts" `
-                -Value ([PSCustomObject]@{})
+    # Ensure scripts exists and is an editable PSCustomObject.
+    $ScriptsProperty = $PackageJson.PSObject.Properties['scripts']
+    if ($null -eq $ScriptsProperty -or $null -eq $ScriptsProperty.Value) {
+        $PackageJson | Add-Member -MemberType NoteProperty -Name 'scripts' -Value ([PSCustomObject]@{}) -Force
+    }
+    elseif ($PackageJson.scripts -isnot [PSCustomObject]) {
+        throw "The 'scripts' field in package.json is not a JSON object."
     }
 
     $NewScripts = [ordered]@{}
 
     if ($HasAndroid) {
-        $NewScripts["aab"]               = "cd android&&gradlew bundleRelease"
-        $NewScripts["release"]           = "cd android&&gradlew assembleRelease"
-        $NewScripts["fastlane:build"]    = "cd android && bundle exec fastlane build"
-        $NewScripts["fastlane:apk"]      = "cd android && bundle exec fastlane apk"
-        $NewScripts["fastlane:deploy"]   = "cd android && bundle exec fastlane deploy"
-        $NewScripts["fastlane:internal"] = "cd android && bundle exec fastlane internal"
+        $NewScripts['aab']               = 'cd android&&gradlew bundleRelease'
+        $NewScripts['release']           = 'cd android&&gradlew assembleRelease'
+        $NewScripts['fastlane:build']    = 'cd android && bundle exec fastlane build'
+        $NewScripts['fastlane:apk']      = 'cd android && bundle exec fastlane apk'
+        $NewScripts['fastlane:deploy']   = 'cd android && bundle exec fastlane deploy'
+        $NewScripts['fastlane:internal'] = 'cd android && bundle exec fastlane internal'
     }
 
     if ($HasIOS) {
-        $NewScripts["fastlane:testflight"] = "cd ios && bundle exec fastlane testflight"
+        $NewScripts['fastlane:testflight'] = 'cd ios && bundle exec fastlane testflight'
     }
 
     foreach ($Entry in $NewScripts.GetEnumerator()) {
+        # Use PSObject.Properties directly; dynamic dotted assignment can fail on some PowerShell versions.
         $ExistingProperty = $PackageJson.scripts.PSObject.Properties[$Entry.Key]
 
         if ($null -ne $ExistingProperty) {
-            $PackageJson.scripts.($Entry.Key) = $Entry.Value
+            $ExistingProperty.Value = [string]$Entry.Value
         }
         else {
-            $PackageJson.scripts |
-                Add-Member -MemberType NoteProperty `
-                    -Name $Entry.Key `
-                    -Value $Entry.Value
+            $PackageJson.scripts | Add-Member -MemberType NoteProperty -Name $Entry.Key -Value ([string]$Entry.Value)
         }
 
         Write-Host "Updated npm script: $($Entry.Key)" -ForegroundColor Green
     }
 
     $JsonContent = $PackageJson | ConvertTo-Json -Depth 100
-    $JsonContent = $JsonContent.Replace('\u0026', '&')
-    $JsonContent = $JsonContent.Replace('\u003e', '>')
-    $JsonContent = $JsonContent.Replace('\u003c', '<')
+    # Write UTF-8 without BOM, using the encoding object declared at the top of this script.
+    [System.IO.File]::WriteAllText($PackageJsonPath, $JsonContent + [Environment]::NewLine, $Utf8NoBom)
 
-    Set-Content `
-        -LiteralPath $PackageJsonPath `
-        -Value $JsonContent `
-        -Encoding UTF8
-
+    # Re-read and validate the actual file on disk, not just the in-memory object.
     try {
-        Get-Content -LiteralPath $PackageJsonPath -Raw |
-            ConvertFrom-Json |
-            Out-Null
+        $WrittenPackageJson = [System.IO.File]::ReadAllText($PackageJsonPath) | ConvertFrom-Json -ErrorAction Stop
+        foreach ($Entry in $NewScripts.GetEnumerator()) {
+            $WrittenProperty = $WrittenPackageJson.scripts.PSObject.Properties[$Entry.Key]
+            if ($null -eq $WrittenProperty -or $WrittenProperty.Value -ne $Entry.Value) {
+                throw "Script '$($Entry.Key)' was not saved correctly."
+            }
+        }
     }
     catch {
-        throw "The updated package.json is invalid JSON."
+        throw "The updated package.json could not be validated: $($_.Exception.Message)"
     }
 
-    Write-Host "package.json updated and formatted successfully." -ForegroundColor Green
+    Write-Host "package.json updated and verified successfully: $PackageJsonPath" -ForegroundColor Green
 
     if ($HasAndroid) {
     $FastlanePath = Join-Path $AndroidPath "fastlane"
