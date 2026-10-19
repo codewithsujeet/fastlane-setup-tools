@@ -4,6 +4,7 @@
 )
 
 $ErrorActionPreference = "Stop"
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 function Write-Step([string]$Message) {
     Write-Host "`n==> $Message" -ForegroundColor Cyan
@@ -58,7 +59,66 @@ try {
 
     Write-Host "Detected application ID: $ApplicationId" -ForegroundColor Green
 
- }
+    Write-Step "Updating package.json scripts"
+
+    try {
+        $PackageJson = Get-Content -LiteralPath $PackageJsonPath -Raw |
+            ConvertFrom-Json
+    }
+    catch {
+        throw "Could not parse package.json. Check that it contains valid JSON."
+    }
+
+    if ($null -eq $PackageJson.scripts) {
+        $PackageJson |
+            Add-Member -MemberType NoteProperty `
+                -Name "scripts" `
+                -Value ([PSCustomObject]@{})
+    }
+
+    $NewScripts = [ordered]@{
+        "aab"               = "cd android&&gradlew bundleRelease"
+        "release"           = "cd android&&gradlew assembleRelease"
+        "fastlane:build"    = "cd android && bundle exec fastlane build"
+        "fastlane:apk"      = "cd android && bundle exec fastlane apk"
+        "fastlane:deploy"   = "cd android && bundle exec fastlane deploy"
+        "fastlane:internal" = "cd android && bundle exec fastlane internal"
+        "fastlane:testflight" = "cd ios && bundle exec fastlane testflight"
+    }
+
+    foreach ($Entry in $NewScripts.GetEnumerator()) {
+        $ExistingProperty = $PackageJson.scripts.PSObject.Properties[$Entry.Key]
+
+        if ($null -ne $ExistingProperty) {
+            $PackageJson.scripts.($Entry.Key) = $Entry.Value
+        }
+        else {
+            $PackageJson.scripts |
+                Add-Member -MemberType NoteProperty `
+                    -Name $Entry.Key `
+                    -Value $Entry.Value
+        }
+
+        Write-Host "Updated npm script: $($Entry.Key)" -ForegroundColor Green
+    }
+
+    $JsonContent = $PackageJson | ConvertTo-Json -Depth 100
+    $JsonContent = $JsonContent.Replace('\u0026', '&')
+    $JsonContent = $JsonContent.Replace('\u003e', '>')
+    $JsonContent = $JsonContent.Replace('\u003c', '<')
+
+    [System.IO.File]::WriteAllText($PackageJsonPath, $JsonContent, $Utf8NoBom)
+    try {
+        [System.IO.File]::ReadAllText($PackageJsonPath, $Utf8NoBom) |
+            ConvertFrom-Json |
+            Out-Null
+    }
+    catch {
+        throw "The updated package.json is invalid JSON."
+    }
+
+    Write-Host "package.json updated and formatted successfully." -ForegroundColor Green
+    }
 
     if ($HasAndroid) {
     $FastlanePath = Join-Path $AndroidPath "fastlane"
@@ -219,10 +279,7 @@ end
             }
         }
 
-        Set-Content -LiteralPath $File.Path `
-            -Value $File.Content `
-            -Encoding UTF8
-
+        [System.IO.File]::WriteAllText($File.Path, $File.Content, $Utf8NoBom)
         Write-Host "Created: $($File.Path)" -ForegroundColor Green
     }
     }
@@ -402,7 +459,7 @@ PLACEHOLDER ONLY - NOT A VALID APP STORE CONNECT PRIVATE KEY.
 Replace this entire file with the real .p8 key downloaded from App Store Connect.
 Do not commit the real private key to source control.
 '@
-            Set-Content -LiteralPath $P8PlaceholderPath -Value $P8PlaceholderContent -Encoding ASCII
+            [System.IO.File]::WriteAllText($P8PlaceholderPath, $P8PlaceholderContent, $Utf8NoBom)
             Write-Host "Created key placeholder: $P8PlaceholderPath" -ForegroundColor Yellow
         }
 
@@ -439,7 +496,7 @@ Do not commit the real private key to source control.
                 }
             }
 
-            Set-Content -LiteralPath $File.Path -Value $File.Content -Encoding UTF8
+            [System.IO.File]::WriteAllText($File.Path, $File.Content, $Utf8NoBom)
             Write-Host "Created: $($File.Path)" -ForegroundColor Green
         }
 
@@ -537,4 +594,9 @@ Do not commit the real private key to source control.
         Write-Host "Never commit the .p8 private key to Git." -ForegroundColor Yellow
         Write-Host "Run iOS build/TestFlight lanes on macOS with Xcode installed." -ForegroundColor Yellow
     }
-roundColor Yellow
+}
+catch {
+    Write-Host ""
+    Write-Host "Fastlane setup failed: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
