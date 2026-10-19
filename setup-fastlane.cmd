@@ -6,7 +6,14 @@ set "FORCE_ARG="
 
 if /I "%~1"=="-Force" set "FORCE_ARG=-Force"
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%setup-fastlane.ps1" -ProjectPath "%SCRIPT_DIR%." %FORCE_ARG%
+set "TARGET_DIR=%CD%"
+if not exist "%TARGET_DIR%\package.json" (
+    if exist "%SCRIPT_DIR%package.json" (
+        set "TARGET_DIR=%SCRIPT_DIR%"
+    )
+)
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%setup-fastlane.ps1" -ProjectPath "%TARGET_DIR%" %FORCE_ARG%
 
 if errorlevel 1 (
     echo.
