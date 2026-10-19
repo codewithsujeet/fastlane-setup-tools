@@ -1,5 +1,5 @@
 param(
-    [string]$ProjectPath = $PSScriptRoot,
+    [string]$ProjectPath = (Get-Location).Path,
     [switch]$Force
 )
 
@@ -16,6 +16,7 @@ try {
     }
 
     $ProjectPath = (Resolve-Path -LiteralPath $ProjectPath).Path
+    Write-Host "Using project root: $ProjectPath" -ForegroundColor Cyan
     $AndroidPath = Join-Path $ProjectPath "android"
     $AppPath = Join-Path $AndroidPath "app"
     $IosPath = Join-Path $ProjectPath "ios"
@@ -128,6 +129,7 @@ try {
     }
 
     Write-Host "package.json updated and verified successfully: $PackageJsonPath" -ForegroundColor Green
+    Write-Host "Added/updated scripts: $($NewScripts.Keys -join ', ')" -ForegroundColor Green
 
     if ($HasAndroid) {
     $FastlanePath = Join-Path $AndroidPath "fastlane"
@@ -581,7 +583,7 @@ Do not commit the real private key to source control.
     if ($ApplicationId) { Write-Host "Application ID: $ApplicationId" }
     Write-Host ""
     Write-Host "Run from the project root:"
-    Write-Host '  PowerShell: powershell -NoProfile -ExecutionPolicy Bypass -File ".\setup-fastlane.ps1"'
+    Write-Host '  PowerShell: powershell -NoProfile -ExecutionPolicy Bypass -File ".\setup-fastlane.ps1" -ProjectPath "."'
     Write-Host "  CMD:        setup-fastlane.cmd"
     Write-Host ""
     Write-Host "NPM scripts:"
