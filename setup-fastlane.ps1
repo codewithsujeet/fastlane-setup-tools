@@ -1,5 +1,5 @@
 param(
-    [string]$ProjectPath = "",
+    [string]$ProjectPath = $PSScriptRoot,
     [switch]$Force
 )
 
@@ -11,33 +11,11 @@ function Write-Step([string]$Message) {
 }
 
 try {
-    # Dynamically locate the React Native project instead of assuming the script folder
-    # or current terminal directory is the project root.
     if ([string]::IsNullOrWhiteSpace($ProjectPath)) {
-        $Candidates = @((Get-Location).Path, $PSScriptRoot) | Where-Object { $_ } | Select-Object -Unique
-        $FoundRoot = $null
-        foreach ($Candidate in $Candidates) {
-            $Walk = [System.IO.DirectoryInfo]::new($Candidate)
-            while ($null -ne $Walk) {
-                $HasPackage = Test-Path -LiteralPath (Join-Path $Walk.FullName 'package.json') -PathType Leaf
-                $HasAndroidProject = Test-Path -LiteralPath (Join-Path $Walk.FullName 'android/app') -PathType Container
-                $HasIosProject = Test-Path -LiteralPath (Join-Path $Walk.FullName 'ios') -PathType Container
-                if ($HasPackage -and ($HasAndroidProject -or $HasIosProject)) {
-                    $FoundRoot = $Walk.FullName
-                    break
-                }
-                $Walk = $Walk.Parent
-            }
-            if ($FoundRoot) { break }
-        }
-        if (-not $FoundRoot) {
-            throw "Could not dynamically locate the React Native project. Run this script from inside the project, or pass -ProjectPath 'C:\path\to\project'."
-        }
-        $ProjectPath = $FoundRoot
+        throw "ProjectPath is empty."
     }
 
     $ProjectPath = (Resolve-Path -LiteralPath $ProjectPath).Path
-    Write-Host "Using project root: $ProjectPath" -ForegroundColor Cyan
     $AndroidPath = Join-Path $ProjectPath "android"
     $AppPath = Join-Path $AndroidPath "app"
     $IosPath = Join-Path $ProjectPath "ios"
@@ -52,103 +30,6 @@ try {
     if (-not $HasAndroid -and -not $HasIOS) {
         throw "Neither android/app nor ios folder was found in: $ProjectPath"
     }
-
-    # ── Update package.json scripts (runs for ANY platform combination) ──
-    Write-Step "Updating package.json scripts"
-
-    try {
-        $PackageJsonText = [System.IO.File]::ReadAllText($PackageJsonPath)
-        $PackageJson = $PackageJsonText | ConvertFrom-Json -ErrorAction Stop
-    }
-    catch {
-        throw "Could not parse package.json. Check that it contains valid JSON. Details: $($_.Exception.Message)"
-    }
-
-    # Ensure scripts exists and is an editable PSCustomObject.
-    $ScriptsProperty = $PackageJson.PSObject.Properties['scripts']
-    if ($null -eq $ScriptsProperty -or $null -eq $ScriptsProperty.Value) {
-        $PackageJson | Add-Member -MemberType NoteProperty -Name 'scripts' -Value ([PSCustomObject]@{}) -Force
-    }
-    elseif ($PackageJson.scripts -isnot [PSCustomObject]) {
-        throw "The 'scripts' field in package.json is not a JSON object."
-    }
-
-    $NewScripts = [ordered]@{}
-    $IsWindowsHost = $env:OS -eq 'Windows_NT'
-
-    if ($HasAndroid) {
-        # Detect the Gradle wrapper script dynamically for Windows vs Unix-like hosts.
-        $GradleWrapper = if ($IsWindowsHost) { 'gradlew.bat' } else { './gradlew' }
-        if (-not (Test-Path -LiteralPath (Join-Path $AndroidPath $GradleWrapper))) {
-            $AlternativeWrapper = if ($IsWindowsHost) { 'gradlew' } else { 'gradlew.bat' }
-            if (Test-Path -LiteralPath (Join-Path $AndroidPath $AlternativeWrapper)) { $GradleWrapper = $AlternativeWrapper }
-            else { throw "Gradle wrapper not found in '$AndroidPath'. Expected gradlew or gradlew.bat." }
-        }
-
-        $NewScripts['aab'] = "cd android && $GradleWrapper bundleRelease"
-        $NewScripts['release'] = "cd android && $GradleWrapper assembleRelease"
-
-        # Add Fastlane commands only when a Fastfile exists or this script will generate one.
-        $NewScripts['fastlane:build'] = 'cd android && bundle exec fastlane build'
-        $NewScripts['fastlane:apk'] = 'cd android && bundle exec fastlane apk'
-        $NewScripts['fastlane:deploy'] = 'cd android && bundle exec fastlane deploy'
-        $NewScripts['fastlane:internal'] = 'cd android && bundle exec fastlane internal'
-    }
-
-    if ($HasIOS) {
-        $NewScripts['fastlane:testflight'] = 'cd ios && bundle exec fastlane testflight'
-    }
-
-    if ($NewScripts.Count -eq 0) {
-        throw "No npm scripts were selected for addition. Expected android/app and/or ios folders under: $ProjectPath"
-    }
-
-    foreach ($Entry in $NewScripts.GetEnumerator()) {
-        # Use PSObject.Properties directly; dynamic dotted assignment can fail on some PowerShell versions.
-        $ExistingProperty = $PackageJson.scripts.PSObject.Properties[$Entry.Key]
-
-        if ($null -ne $ExistingProperty) {
-            $ExistingProperty.Value = [string]$Entry.Value
-        }
-        else {
-            $PackageJson.scripts | Add-Member -MemberType NoteProperty -Name $Entry.Key -Value ([string]$Entry.Value)
-        }
-
-        Write-Host "Updated npm script: $($Entry.Key)" -ForegroundColor Green
-    }
-
-    $JsonContent = $PackageJson | ConvertTo-Json -Depth 100
-
-    # Preserve the original package.json once before modifying it.
-    $PackageBackupPath = "$PackageJsonPath.backup"
-    if (-not (Test-Path -LiteralPath $PackageBackupPath -PathType Leaf)) {
-        Copy-Item -LiteralPath $PackageJsonPath -Destination $PackageBackupPath
-        Write-Host "Backup created: $PackageBackupPath" -ForegroundColor Yellow
-    }
-    else {
-        Write-Host "Existing package.json backup preserved: $PackageBackupPath" -ForegroundColor Yellow
-    }
-
-    # Write UTF-8 without BOM, using the encoding object declared at the top of this script.
-    [System.IO.File]::WriteAllText($PackageJsonPath, $JsonContent + [Environment]::NewLine, $Utf8NoBom)
-
-    # Re-read and validate the actual file on disk, not just the in-memory object.
-    try {
-        $WrittenPackageJson = [System.IO.File]::ReadAllText($PackageJsonPath) | ConvertFrom-Json -ErrorAction Stop
-        foreach ($Entry in $NewScripts.GetEnumerator()) {
-            $WrittenProperty = $WrittenPackageJson.scripts.PSObject.Properties[$Entry.Key]
-            if ($null -eq $WrittenProperty -or $WrittenProperty.Value -ne $Entry.Value) {
-                throw "ERROR: npm script '$($Entry.Key)' was NOT added to package.json at: $PackageJsonPath"
-            }
-        }
-    }
-    catch {
-        throw "ERROR: package.json update failed for $PackageJsonPath. $($_.Exception.Message)"
-    }
-
-    Write-Host "package.json updated and verified successfully: $PackageJsonPath" -ForegroundColor Green
-    Write-Host "Added/updated scripts: $($NewScripts.Keys -join ', ')" -ForegroundColor Green
-
 
     $ApplicationId = $null
     if ($HasAndroid) {
@@ -177,6 +58,66 @@ try {
     $ApplicationId = $Match.Groups[1].Value
 
     Write-Host "Detected application ID: $ApplicationId" -ForegroundColor Green
+
+    Write-Step "Updating package.json scripts"
+
+    try {
+        $PackageJson = Get-Content -LiteralPath $PackageJsonPath -Raw |
+            ConvertFrom-Json
+    }
+    catch {
+        throw "Could not parse package.json. Check that it contains valid JSON."
+    }
+
+    if ($null -eq $PackageJson.scripts) {
+        $PackageJson |
+            Add-Member -MemberType NoteProperty `
+                -Name "scripts" `
+                -Value ([PSCustomObject]@{})
+    }
+
+    $NewScripts = [ordered]@{
+        "aab"               = "cd android&&gradlew bundleRelease"
+        "release"           = "cd android&&gradlew assembleRelease"
+        "fastlane:build"    = "cd android && bundle exec fastlane build"
+        "fastlane:apk"      = "cd android && bundle exec fastlane apk"
+        "fastlane:deploy"   = "cd android && bundle exec fastlane deploy"
+        "fastlane:internal" = "cd android && bundle exec fastlane internal"
+        "fastlane:testflight" = "cd ios && bundle exec fastlane testflight"
+    }
+
+    foreach ($Entry in $NewScripts.GetEnumerator()) {
+        $ExistingProperty = $PackageJson.scripts.PSObject.Properties[$Entry.Key]
+
+        if ($null -ne $ExistingProperty) {
+            $PackageJson.scripts.($Entry.Key) = $Entry.Value
+        }
+        else {
+            $PackageJson.scripts |
+                Add-Member -MemberType NoteProperty `
+                    -Name $Entry.Key `
+                    -Value $Entry.Value
+        }
+
+        Write-Host "Updated npm script: $($Entry.Key)" -ForegroundColor Green
+    }
+
+    $JsonContent = $PackageJson | ConvertTo-Json -Depth 100
+    $JsonContent = $JsonContent.Replace('\u0026', '&')
+    $JsonContent = $JsonContent.Replace('\u003e', '>')
+    $JsonContent = $JsonContent.Replace('\u003c', '<')
+
+    [System.IO.File]::WriteAllText($PackageJsonPath, $JsonContent, $Utf8NoBom)
+    try {
+        [System.IO.File]::ReadAllText($PackageJsonPath, $Utf8NoBom) |
+            ConvertFrom-Json |
+            Out-Null
+    }
+    catch {
+        throw "The updated package.json is invalid JSON."
+    }
+
+    Write-Host "package.json updated and formatted successfully." -ForegroundColor Green
     }
 
     if ($HasAndroid) {
@@ -338,10 +279,7 @@ end
             }
         }
 
-        Set-Content -LiteralPath $File.Path `
-            -Value $File.Content `
-            -Encoding UTF8
-
+        [System.IO.File]::WriteAllText($File.Path, $File.Content, $Utf8NoBom)
         Write-Host "Created: $($File.Path)" -ForegroundColor Green
     }
     }
@@ -457,8 +395,8 @@ platform :ios do
   lane :testflight do
 
     api_key = app_store_connect_api_key(
-      key_id: ENV.fetch("ASC_KEY_ID"),
-      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      key_id: "KHK7587878",
+      issuer_id: "frte03b-6fb2-4089-be60-8071d381abf5",
       key_filepath: "./fastlane/__IOS_AUTHKEY_FILENAME__",
       duration: 1200,
       in_house: false
@@ -521,7 +459,7 @@ PLACEHOLDER ONLY - NOT A VALID APP STORE CONNECT PRIVATE KEY.
 Replace this entire file with the real .p8 key downloaded from App Store Connect.
 Do not commit the real private key to source control.
 '@
-            Set-Content -LiteralPath $P8PlaceholderPath -Value $P8PlaceholderContent -Encoding ASCII
+            [System.IO.File]::WriteAllText($P8PlaceholderPath, $P8PlaceholderContent, $Utf8NoBom)
             Write-Host "Created key placeholder: $P8PlaceholderPath" -ForegroundColor Yellow
         }
 
@@ -558,7 +496,7 @@ Do not commit the real private key to source control.
                 }
             }
 
-            Set-Content -LiteralPath $File.Path -Value $File.Content -Encoding UTF8
+            [System.IO.File]::WriteAllText($File.Path, $File.Content, $Utf8NoBom)
             Write-Host "Created: $($File.Path)" -ForegroundColor Green
         }
 
@@ -631,7 +569,7 @@ Do not commit the real private key to source control.
     if ($ApplicationId) { Write-Host "Application ID: $ApplicationId" }
     Write-Host ""
     Write-Host "Run from the project root:"
-    Write-Host '  PowerShell: powershell -NoProfile -ExecutionPolicy Bypass -File ".\setup-fastlane.ps1" -ProjectPath "."'
+    Write-Host '  PowerShell: powershell -NoProfile -ExecutionPolicy Bypass -File ".\setup-fastlane.ps1"'
     Write-Host "  CMD:        setup-fastlane.cmd"
     Write-Host ""
     Write-Host "NPM scripts:"
