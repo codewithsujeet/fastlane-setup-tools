@@ -1,5 +1,5 @@
 param(
-    [string]$ProjectPath = "",
+    [string]$ProjectPath = $PSScriptRoot,
     [switch]$Force
 )
 
@@ -12,15 +12,7 @@ function Write-Step([string]$Message) {
 
 try {
     if ([string]::IsNullOrWhiteSpace($ProjectPath)) {
-        if (Test-Path -LiteralPath (Join-Path (Get-Location).Path "package.json")) {
-            $ProjectPath = (Get-Location).Path
-        }
-        elseif (Test-Path -LiteralPath (Join-Path $PSScriptRoot "package.json")) {
-            $ProjectPath = $PSScriptRoot
-        }
-        else {
-            $ProjectPath = (Get-Location).Path
-        }
+        throw "ProjectPath is empty."
     }
 
     $ProjectPath = (Resolve-Path -LiteralPath $ProjectPath).Path
@@ -32,149 +24,111 @@ try {
     $PackageJsonPath = Join-Path $ProjectPath "package.json"
 
     if (-not (Test-Path -LiteralPath $PackageJsonPath)) {
-        throw "package.json not found in '$ProjectPath'. Run this script from your React Native project root."
+        throw "package.json not found. Run this script from your React Native project root."
     }
 
     if (-not $HasAndroid -and -not $HasIOS) {
         throw "Neither android/app nor ios folder was found in: $ProjectPath"
     }
 
-    # ── Update package.json scripts (runs FIRST and for any platform combination) ──
+    $ApplicationId = $null
+    if ($HasAndroid) {
+    $GradleFile = @(
+        (Join-Path $AppPath "build.gradle"),
+        (Join-Path $AppPath "build.gradle.kts")
+    ) |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        Select-Object -First 1
+
+    if (-not $GradleFile) {
+        throw "android/app/build.gradle or build.gradle.kts not found."
+    }
+
+    $GradleContent = Get-Content -LiteralPath $GradleFile -Raw
+
+    $Match = [regex]::Match(
+        $GradleContent,
+        '(?m)^\s*applicationId\s*(?:=\s*)?["'']([^"'']+)["'']'
+    )
+
+    if (-not $Match.Success) {
+        throw "Could not detect applicationId in $GradleFile. Add it manually to android/fastlane/Appfile."
+    }
+
+    $ApplicationId = $Match.Groups[1].Value
+
+    Write-Host "Detected application ID: $ApplicationId" -ForegroundColor Green
+    }
+
+    # ── Update package.json scripts (runs for ANY platform combination) ──
     Write-Step "Updating package.json scripts"
+
+    try {
+        $PackageJson = Get-Content -LiteralPath $PackageJsonPath -Raw |
+            ConvertFrom-Json
+    }
+    catch {
+        throw "Could not parse package.json. Check that it contains valid JSON."
+    }
+
+    if ($null -eq $PackageJson.scripts) {
+        $PackageJson |
+            Add-Member -MemberType NoteProperty `
+                -Name "scripts" `
+                -Value ([PSCustomObject]@{})
+    }
 
     $NewScripts = [ordered]@{}
 
     if ($HasAndroid) {
         $NewScripts["aab"]               = "cd android&&gradlew bundleRelease"
         $NewScripts["release"]           = "cd android&&gradlew assembleRelease"
-        $NewScripts["fastlane:build"]    = "cd android && bundle exec fastlane android build"
-        $NewScripts["fastlane:apk"]      = "cd android && bundle exec fastlane android apk"
-        $NewScripts["fastlane:deploy"]   = "cd android && bundle exec fastlane android deploy"
-        $NewScripts["fastlane:internal"] = "cd android && bundle exec fastlane android internal"
+        $NewScripts["fastlane:build"]    = "cd android && bundle exec fastlane build"
+        $NewScripts["fastlane:apk"]      = "cd android && bundle exec fastlane apk"
+        $NewScripts["fastlane:deploy"]   = "cd android && bundle exec fastlane deploy"
+        $NewScripts["fastlane:internal"] = "cd android && bundle exec fastlane internal"
     }
 
     if ($HasIOS) {
-        $NewScripts["fastlane:testflight"] = "cd ios && bundle exec fastlane ios testflight"
+        $NewScripts["fastlane:testflight"] = "cd ios && bundle exec fastlane testflight"
     }
 
-    $NodeCmd = Get-Command node -ErrorAction SilentlyContinue
-    $UpdatedSuccessfully = $false
+    foreach ($Entry in $NewScripts.GetEnumerator()) {
+        $ExistingProperty = $PackageJson.scripts.PSObject.Properties[$Entry.Key]
 
-    if ($NodeCmd) {
-        try {
-            $ScriptsJson = $NewScripts | ConvertTo-Json -Compress
-            $Env:TEMP_SCRIPTS_JSON = $ScriptsJson
-            $Env:TEMP_PKG_PATH = $PackageJsonPath
-
-            & node -e "
-                const fs = require('fs');
-                const file = process.env.TEMP_PKG_PATH;
-                let raw = fs.readFileSync(file, 'utf8');
-                if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
-                const pkg = JSON.parse(raw);
-                pkg.scripts = pkg.scripts || {};
-                const newScripts = JSON.parse(process.env.TEMP_SCRIPTS_JSON);
-                for (const [k, v] of Object.entries(newScripts)) {
-                    pkg.scripts[k] = v;
-                }
-                fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
-            "
-            Remove-Item env:TEMP_SCRIPTS_JSON -ErrorAction SilentlyContinue
-            Remove-Item env:TEMP_PKG_PATH -ErrorAction SilentlyContinue
-
-            if ($LASTEXITCODE -eq 0) {
-                $UpdatedSuccessfully = $true
-                foreach ($Key in $NewScripts.Keys) {
-                    Write-Host "Updated npm script: $Key" -ForegroundColor Green
-                }
-            }
-        }
-        catch {
-            $UpdatedSuccessfully = $false
-        }
-    }
-
-    if (-not $UpdatedSuccessfully) {
-        try {
-            $PackageJsonRaw = Get-Content -LiteralPath $PackageJsonPath -Raw
-            # Strip BOM if present
-            if ($PackageJsonRaw.Length -gt 0 -and [int]$PackageJsonRaw[0] -eq 65279) {
-                $PackageJsonRaw = $PackageJsonRaw.Substring(1)
-            }
-            $PackageJson = $PackageJsonRaw | ConvertFrom-Json
-        }
-        catch {
-            throw "Could not parse package.json. Check that it contains valid JSON."
-        }
-
-        if ($null -eq $PackageJson.scripts) {
-            $PackageJson |
-                Add-Member -MemberType NoteProperty `
-                    -Name "scripts" `
-                    -Value ([PSCustomObject]@{})
-        }
-
-        foreach ($Entry in $NewScripts.GetEnumerator()) {
-            $ExistingProperty = $PackageJson.scripts.PSObject.Properties[$Entry.Key]
-
-            if ($null -ne $ExistingProperty) {
-                $PackageJson.scripts.($Entry.Key) = $Entry.Value
-            }
-            else {
-                $PackageJson.scripts |
-                    Add-Member -MemberType NoteProperty `
-                        -Name $Entry.Key `
-                        -Value $Entry.Value
-            }
-
-            Write-Host "Updated npm script: $($Entry.Key)" -ForegroundColor Green
-        }
-
-        $JsonContent = $PackageJson | ConvertTo-Json -Depth 100
-        $JsonContent = $JsonContent.Replace('\u0026', '&')
-        $JsonContent = $JsonContent.Replace('\u003e', '>')
-        $JsonContent = $JsonContent.Replace('\u003c', '<')
-
-        [System.IO.File]::WriteAllText($PackageJsonPath, $JsonContent, $Utf8NoBom)
-    }
-
-    Write-Host "package.json updated successfully." -ForegroundColor Green
-
-    $ApplicationId = $null
-    if ($HasAndroid) {
-        $GradleFile = @(
-            (Join-Path $AppPath "build.gradle"),
-            (Join-Path $AppPath "build.gradle.kts")
-        ) |
-            Where-Object { Test-Path -LiteralPath $_ } |
-            Select-Object -First 1
-
-        if (-not $GradleFile) {
-            throw "android/app/build.gradle or build.gradle.kts not found."
-        }
-
-        $GradleContent = Get-Content -LiteralPath $GradleFile -Raw
-
-        $Match = [regex]::Match(
-            $GradleContent,
-            '(?m)^\s*(?:applicationId|namespace)\s*(?:=\s*)?["'']([^"'']+)["'']'
-        )
-
-        if (-not $Match.Success) {
-            $Match = [regex]::Match(
-                $GradleContent,
-                '(?:applicationId|namespace)\s*(?:=\s*)?["'']([^"'']+)["'']'
-            )
-        }
-
-        if ($Match.Success) {
-            $ApplicationId = $Match.Groups[1].Value
-            Write-Host "Detected application ID: $ApplicationId" -ForegroundColor Green
+        if ($null -ne $ExistingProperty) {
+            $PackageJson.scripts.($Entry.Key) = $Entry.Value
         }
         else {
-            $ApplicationId = Read-Host "Could not detect applicationId in $GradleFile. Enter Android Application ID (e.g. com.example.app)"
+            $PackageJson.scripts |
+                Add-Member -MemberType NoteProperty `
+                    -Name $Entry.Key `
+                    -Value $Entry.Value
         }
+
+        Write-Host "Updated npm script: $($Entry.Key)" -ForegroundColor Green
     }
+
+    $JsonContent = $PackageJson | ConvertTo-Json -Depth 100
+    $JsonContent = $JsonContent.Replace('\u0026', '&')
+    $JsonContent = $JsonContent.Replace('\u003e', '>')
+    $JsonContent = $JsonContent.Replace('\u003c', '<')
+
+    Set-Content `
+        -LiteralPath $PackageJsonPath `
+        -Value $JsonContent `
+        -Encoding UTF8
+
+    try {
+        Get-Content -LiteralPath $PackageJsonPath -Raw |
+            ConvertFrom-Json |
+            Out-Null
+    }
+    catch {
+        throw "The updated package.json is invalid JSON."
+    }
+
+    Write-Host "package.json updated and formatted successfully." -ForegroundColor Green
 
     if ($HasAndroid) {
     $FastlanePath = Join-Path $AndroidPath "fastlane"
