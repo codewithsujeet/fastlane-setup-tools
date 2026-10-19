@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$ProjectPath = $PSScriptRoot,
     [switch]$Force
 )
@@ -58,7 +58,9 @@ try {
     $ApplicationId = $Match.Groups[1].Value
 
     Write-Host "Detected application ID: $ApplicationId" -ForegroundColor Green
+    }
 
+    # ── Update package.json scripts (runs for ANY platform combination) ──
     Write-Step "Updating package.json scripts"
 
     try {
@@ -76,14 +78,19 @@ try {
                 -Value ([PSCustomObject]@{})
     }
 
-    $NewScripts = [ordered]@{
-        "aab"               = "cd android&&gradlew bundleRelease"
-        "release"           = "cd android&&gradlew assembleRelease"
-        "fastlane:build"    = "cd android && bundle exec fastlane build"
-        "fastlane:apk"      = "cd android && bundle exec fastlane apk"
-        "fastlane:deploy"   = "cd android && bundle exec fastlane deploy"
-        "fastlane:internal" = "cd android && bundle exec fastlane internal"
-        "fastlane:testflight" = "cd ios && bundle exec fastlane testflight"
+    $NewScripts = [ordered]@{}
+
+    if ($HasAndroid) {
+        $NewScripts["aab"]               = "cd android&&gradlew bundleRelease"
+        $NewScripts["release"]           = "cd android&&gradlew assembleRelease"
+        $NewScripts["fastlane:build"]    = "cd android && bundle exec fastlane build"
+        $NewScripts["fastlane:apk"]      = "cd android && bundle exec fastlane apk"
+        $NewScripts["fastlane:deploy"]   = "cd android && bundle exec fastlane deploy"
+        $NewScripts["fastlane:internal"] = "cd android && bundle exec fastlane internal"
+    }
+
+    if ($HasIOS) {
+        $NewScripts["fastlane:testflight"] = "cd ios && bundle exec fastlane testflight"
     }
 
     foreach ($Entry in $NewScripts.GetEnumerator()) {
@@ -122,7 +129,6 @@ try {
     }
 
     Write-Host "package.json updated and formatted successfully." -ForegroundColor Green
-    }
 
     if ($HasAndroid) {
     $FastlanePath = Join-Path $AndroidPath "fastlane"
