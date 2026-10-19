@@ -107,9 +107,13 @@ try {
     $JsonContent = $JsonContent.Replace('\u003e', '>')
     $JsonContent = $JsonContent.Replace('\u003c', '<')
 
-    [System.IO.File]::WriteAllText($PackageJsonPath, $JsonContent, $Utf8NoBom)
+    Set-Content `
+        -LiteralPath $PackageJsonPath `
+        -Value $JsonContent `
+        -Encoding UTF8
+
     try {
-        [System.IO.File]::ReadAllText($PackageJsonPath, $Utf8NoBom) |
+        Get-Content -LiteralPath $PackageJsonPath -Raw |
             ConvertFrom-Json |
             Out-Null
     }
@@ -279,7 +283,10 @@ end
             }
         }
 
-        [System.IO.File]::WriteAllText($File.Path, $File.Content, $Utf8NoBom)
+        Set-Content -LiteralPath $File.Path `
+            -Value $File.Content `
+            -Encoding UTF8
+
         Write-Host "Created: $($File.Path)" -ForegroundColor Green
     }
     }
@@ -459,7 +466,7 @@ PLACEHOLDER ONLY - NOT A VALID APP STORE CONNECT PRIVATE KEY.
 Replace this entire file with the real .p8 key downloaded from App Store Connect.
 Do not commit the real private key to source control.
 '@
-            [System.IO.File]::WriteAllText($P8PlaceholderPath, $P8PlaceholderContent, $Utf8NoBom)
+            Set-Content -LiteralPath $P8PlaceholderPath -Value $P8PlaceholderContent -Encoding ASCII
             Write-Host "Created key placeholder: $P8PlaceholderPath" -ForegroundColor Yellow
         }
 
@@ -496,7 +503,7 @@ Do not commit the real private key to source control.
                 }
             }
 
-            [System.IO.File]::WriteAllText($File.Path, $File.Content, $Utf8NoBom)
+            Set-Content -LiteralPath $File.Path -Value $File.Content -Encoding UTF8
             Write-Host "Created: $($File.Path)" -ForegroundColor Green
         }
 
